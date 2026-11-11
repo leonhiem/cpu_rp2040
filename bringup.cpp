@@ -385,6 +385,7 @@ int main(void)
 
     gpio_init(PIN_ALARM_LED);
     gpio_set_dir(PIN_ALARM_LED, GPIO_OUT);
+    gpio_set_drive_strength(PIN_ALARM_LED, GPIO_DRIVE_STRENGTH_8MA); // ~7mA, see board.h
     gpio_put(PIN_ALARM_LED, 1); // off (inverted)
 
     buttons_setup();
