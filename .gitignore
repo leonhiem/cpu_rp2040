@@ -8,3 +8,6 @@ build/
 
 # Claude Code local (machine-specific) settings
 .claude/settings.local.json
+
+# Local Claude Code resume note
+exitmsg
