@@ -16,7 +16,7 @@
 #define BOARD_I2C          i2c1
 #define BOARD_I2C_SDA      14
 #define BOARD_I2C_SCL      15
-#define BOARD_I2C_HZ       100000
+#define BOARD_I2C_HZ       400000 // PCF8563's max; bring-up first passed at 100k
 
 #define RTC_I2C_ADDR       0x51  // PCF8563T, fixed address
 #define FRAM_I2C_ADDR      0x50  // FM24CL64B, A2..A0 = 0
@@ -45,6 +45,19 @@
 // drive strength is raised to 8mA (default is 4mA).
 #define PIN_ALARM_LED      1
 
+// Lamp output, GPIO6 like babywarmer's baby-light. babywarmer drove it
+// active-high (1 = on); on this board a test LED is wired the same way
+// as the one on GPIO1 (3V3 -> LED -> resistor -> GPIO6), so 0 = lit.
+// Flip PIN_LAMP_ON to 1 for an active-high load (e.g. a transistor).
+//
+// LESSON (2026-11-12): before picoos configured GPIO6, that LED glowed
+// dimly with 1.5 V on the pin -- an unconfigured RP2040 pin is an input
+// with a ~50k internal pull-down, enough to pass a few tens of uA through
+// an LED wired to 3V3. Outputs like this get set to "off" first thing at
+// boot (board_lamp_init()).
+#define PIN_LAMP           6
+#define PIN_LAMP_ON        0
+
 // Push buttons, active low, internal pull-ups.
 #define BUTTON_PIN_MUTE    2
 #define BUTTON_PIN_UP      7
@@ -52,3 +65,8 @@
 #define BUTTON_PIN_MANUAL  9
 #define BUTTON_PIN_START  28
 #define BUTTON_PIN_LAMP   29
+
+// drivers/board.cpp
+void board_i2c_init(void);
+void board_led_init(void);   // configured, off
+void board_lamp_init(void);  // configured, off

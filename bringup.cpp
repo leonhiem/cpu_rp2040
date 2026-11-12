@@ -22,18 +22,12 @@
 #include <cstring>
 #include "hardware/i2c.h"
 #include "board.h"
+#include "drivers/fm24cl64.h"
+#include "drivers/pcf8563.h"
 
 #define I2C_TIMEOUT_US 10000
 
 // ---------------------------------------------------------------- I2C
-
-static void i2c_setup(void)
-{
-    i2c_init(BOARD_I2C, BOARD_I2C_HZ);
-    gpio_set_function(BOARD_I2C_SDA, GPIO_FUNC_I2C);
-    gpio_set_function(BOARD_I2C_SCL, GPIO_FUNC_I2C);
-    // External 4k7 pull-ups on the board, no internal ones needed.
-}
 
 static bool i2c_reserved(uint8_t addr)
 {
@@ -63,29 +57,7 @@ static bool test_scan(void)
 }
 
 // ---------------------------------------------------------------- FRAM
-//
-// FM24CL64B: 2-byte memory address, no page size, no write delay.
-
-static bool fram_read(uint16_t addr, uint8_t *buf, int len)
-{
-    uint8_t a[2] = { (uint8_t)(addr >> 8), (uint8_t)addr };
-    if (i2c_write_timeout_us(BOARD_I2C, FRAM_I2C_ADDR, a, 2, true, I2C_TIMEOUT_US) != 2)
-        return false;
-    return i2c_read_timeout_us(BOARD_I2C, FRAM_I2C_ADDR, buf, len, false,
-                               I2C_TIMEOUT_US + len * 100) == len;
-}
-
-static bool fram_write(uint16_t addr, const uint8_t *buf, int len)
-{
-    uint8_t tmp[2 + 64];
-    if (len > 64)
-        return false;
-    tmp[0] = addr >> 8;
-    tmp[1] = addr;
-    memcpy(tmp + 2, buf, len);
-    return i2c_write_timeout_us(BOARD_I2C, FRAM_I2C_ADDR, tmp, len + 2, false,
-                                I2C_TIMEOUT_US + len * 100) == len + 2;
-}
+// drivers/fm24cl64.h does the I2C.
 
 static uint8_t fram_pattern(uint16_t addr)
 {
@@ -175,80 +147,8 @@ static bool test_fram(void)
 
 // ---------------------------------------------------------------- RTC
 //
-// PCF8563: registers 0x02..0x08 = sec min hour day weekday month year,
-// BCD. Seconds bit 7 = VL (clock integrity not guaranteed, e.g. after
-// the backup supply ran out). Control_1 bit 5 = STOP.
-
-struct rtc_time {
-    int year, month, day, weekday, hour, min, sec;
-    bool vl;
-};
-
-static uint8_t bcd2bin(uint8_t v) { return (v >> 4) * 10 + (v & 0x0f); }
-static uint8_t bin2bcd(int v)     { return (uint8_t)(((v / 10) << 4) | (v % 10)); }
-
-static bool rtc_read_regs(uint8_t reg, uint8_t *buf, int len)
-{
-    if (i2c_write_timeout_us(BOARD_I2C, RTC_I2C_ADDR, &reg, 1, true, I2C_TIMEOUT_US) != 1)
-        return false;
-    return i2c_read_timeout_us(BOARD_I2C, RTC_I2C_ADDR, buf, len, false, I2C_TIMEOUT_US) == len;
-}
-
-static bool rtc_write_reg(uint8_t reg, uint8_t val)
-{
-    uint8_t b[2] = { reg, val };
-    return i2c_write_timeout_us(BOARD_I2C, RTC_I2C_ADDR, b, 2, false, I2C_TIMEOUT_US) == 2;
-}
-
-static bool rtc_get(rtc_time *t)
-{
-    uint8_t r[7];
-    if (!rtc_read_regs(0x02, r, 7))
-        return false;
-    t->vl      = r[0] & 0x80;
-    t->sec     = bcd2bin(r[0] & 0x7f);
-    t->min     = bcd2bin(r[1] & 0x7f);
-    t->hour    = bcd2bin(r[2] & 0x3f);
-    t->day     = bcd2bin(r[3] & 0x3f);
-    t->weekday = r[4] & 0x07;
-    t->month   = bcd2bin(r[5] & 0x1f);
-    t->year    = 2000 + bcd2bin(r[6]) + ((r[5] & 0x80) ? 100 : 0);
-    return true;
-}
-
-static bool rtc_valid(const rtc_time *t)
-{
-    return t->sec < 60 && t->min < 60 && t->hour < 24 && t->day >= 1 && t->day <= 31
-        && t->month >= 1 && t->month <= 12;
-}
-
-// 0 = Sunday (Sakamoto)
-static int weekday_of(int y, int m, int d)
-{
-    static const int k[] = { 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 };
-    if (m < 3)
-        y--;
-    return (y + y / 4 - y / 100 + y / 400 + k[m - 1] + d) % 7;
-}
-
-static bool rtc_set(const rtc_time *t)
-{
-    uint8_t b[8] = {
-        0x02,
-        bin2bcd(t->sec),            // writing seconds clears VL
-        bin2bcd(t->min),
-        bin2bcd(t->hour),
-        bin2bcd(t->day),
-        (uint8_t)weekday_of(t->year, t->month, t->day),
-        (uint8_t)(bin2bcd(t->month) | (t->year >= 2100 ? 0x80 : 0)),
-        bin2bcd(t->year % 100),
-    };
-    // Stop the clock while writing so the new second starts cleanly.
-    if (!rtc_write_reg(0x00, 0x20))
-        return false;
-    bool ok = i2c_write_timeout_us(BOARD_I2C, RTC_I2C_ADDR, b, 8, false, I2C_TIMEOUT_US) == 8;
-    return rtc_write_reg(0x00, 0x00) && ok;
-}
+// drivers/pcf8563.h does the I2C. No rtc_init() here on purpose: the
+// test wants to see the chip's raw power-on state.
 
 static void print_time(const rtc_time *t)
 {
@@ -295,14 +195,6 @@ static bool test_rtc(void)
     printf("rtc: ticking (%02d -> %02d)\n", a.sec, b.sec);
     printf("rtc: %s\n", a.vl ? "ok, but VL set: time needs setting" : "ok");
     return true;
-}
-
-static bool parse_set(const char *s, rtc_time *t)
-{
-    if (sscanf(s, "%d-%d-%d %d:%d:%d", &t->year, &t->month, &t->day,
-               &t->hour, &t->min, &t->sec) != 6)
-        return false;
-    return t->year >= 2000 && t->year <= 2199 && rtc_valid(t);
 }
 
 // ---------------------------------------------------------------- buttons
@@ -369,7 +261,7 @@ static void dispatch(char *line)
         if (rtc_get(&t)) print_time(&t);
         else printf("rtc: i2c error\n");
     } else if (!strncmp(line, "set ", 4)) {
-        if (!parse_set(line + 4, &t))
+        if (!rtc_parse(line + 4, &t))
             printf("usage: set YYYY-MM-DD HH:MM:SS\n");
         else if (!rtc_set(&t))
             printf("rtc: i2c error\n");
@@ -383,13 +275,11 @@ int main(void)
 {
     stdio_init_all();
 
-    gpio_init(PIN_ALARM_LED);
-    gpio_set_dir(PIN_ALARM_LED, GPIO_OUT);
-    gpio_set_drive_strength(PIN_ALARM_LED, GPIO_DRIVE_STRENGTH_8MA); // ~7mA, see board.h
-    gpio_put(PIN_ALARM_LED, 1); // off (inverted)
+    board_led_init();
+    board_lamp_init(); // off, so an LED on GPIO6 doesn't glow via the pull-down
 
     buttons_setup();
-    i2c_setup();
+    board_i2c_init();
 
     // Give a terminal a moment to attach so the boot report isn't lost.
     absolute_time_t wait = make_timeout_time_ms(5000);
