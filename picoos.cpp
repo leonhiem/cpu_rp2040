@@ -6,7 +6,8 @@
  * generic programs. Left behind in picoos: everything babywarmer-
  * specific (heater, NTC/ADS1115, 7-segment, TFT, PID/phase/alarm wiring).
  * New here: the board's own devices (LED, lamp, buttons, PCF8563 RTC, die
- * temperature, uptime, reboot) and more small Unix-style programs.
+ * temperature, uptime, reboot), a filesystem on the FRAM mounted at
+ * /fram (fs/framfs.h), and more small Unix-style programs.
  *
  * Same rule as always: a device owns hardware, a program only ever
  * touches /dev paths.
@@ -29,6 +30,7 @@ void rtc_register(void);
 void uptime_register(void);
 void cputemp_register(void);
 void reboot_register(void);
+void fram_register(void);
 
 // prog/*.cpp
 void cat_register(void);
@@ -46,6 +48,9 @@ void wc_register(void);
 void grep_register(void);
 void headtail_register(void);
 void tee_register(void);
+void rm_register(void);
+void mkfs_register(void);
+void df_register(void);
 void ls_register(void);
 
 void task_shell(void);
@@ -77,6 +82,7 @@ int main()
     uptime_register();
     cputemp_register();
     reboot_register();
+    fram_register();     // mounts /fram
 
     cat_register();
     echo_register();
@@ -93,6 +99,9 @@ int main()
     grep_register();
     headtail_register();
     tee_register();
+    rm_register();
+    mkfs_register();
+    df_register();
     ls_register();
     jobs_init();
 

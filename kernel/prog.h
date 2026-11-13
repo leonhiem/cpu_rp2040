@@ -10,7 +10,10 @@
  */
 #pragma once
 
-#define PROG_MAX 24 // 2026-08-20: bumped from 12 -- phase/safelut/select
+#define PROG_MAX 48 // 2026-11-12 (cpu_rp2040): bumped from 24 -- 20 used
+                    // after the FRAM commands (rm/mkfs/df), and many
+                    // more small programs are the plan. Headroom again.
+                    // 2026-08-20: bumped from 12 -- phase/safelut/select
                     // would have pushed count to 13, past the old cap,
                     // through the exact same silent-drop TODO fs_register
                     // had before it got a loud warning (see prog.cpp).

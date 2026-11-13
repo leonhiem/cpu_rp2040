@@ -60,6 +60,7 @@ typedef struct {
     int  nstages;
     pipeline_stage_t stages[JOB_MAX_STAGES];
     bool has_redirect_out;
+    bool redirect_append;          // `>>` instead of `>`
     char redirect_out[JOB_TOK_MAX];
     bool has_redirect_in;
     char redirect_in[JOB_TOK_MAX];

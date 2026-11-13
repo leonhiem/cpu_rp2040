@@ -62,6 +62,8 @@ add_executable(picoos
     dev/uptime.cpp
     dev/cputemp.cpp
     dev/reboot.cpp
+    dev/fram.cpp
+    fs/framfs.cpp
     prog/cat.cpp
     prog/echo.cpp
     prog/label.cpp
@@ -77,6 +79,9 @@ add_executable(picoos
     prog/grep.cpp
     prog/headtail.cpp
     prog/tee.cpp
+    prog/rm.cpp
+    prog/mkfs.cpp
+    prog/df.cpp
     prog/ls.cpp
 )
 target_link_libraries(picoos picoos_kernel board_drivers pico_stdlib

@@ -7,14 +7,19 @@
 
 void pipeline_run_once(pipeline_t *p, bool print_if_no_redirect)
 {
-    char buf_a[STAGE_BUF];
-    char buf_b[STAGE_BUF];
+    // static, not on the stack: 2 KB here made the deepest call path
+    // (shell -> dispatch -> this -> a program -> printf) ~4 KB, double the
+    // 2 KB stack the SDK reserves; it only worked by spilling into core 1's
+    // stack area (unused so far). Safe as static: one core, cooperative
+    // tasks, and nothing calls pipeline_run_once() from inside a pipeline.
+    static char buf_a[STAGE_BUF];
+    static char buf_b[STAGE_BUF];
     char *cur = buf_a, *other = buf_b;
     int cur_len = 0;
 
     if (p->has_redirect_in) {
         int fd = fs_open(p->redirect_in);
-        if (fd < 0) { printf("%s: no such device\n", p->redirect_in); return; }
+        if (fd < 0) { printf("%s: not found\n", p->redirect_in); return; }
         int n = fs_read(fd, cur, STAGE_BUF);
         fs_close(fd);
         cur_len = n < 0 ? 0 : n;
@@ -38,13 +43,20 @@ void pipeline_run_once(pipeline_t *p, bool print_if_no_redirect)
     }
 
     if (p->has_redirect_out) {
-        int fd = fs_open(p->redirect_out);
-        if (fd < 0) { printf("%s: no such device\n", p->redirect_out); return; }
-        fs_write(fd, cur, cur_len);
+        int fd = fs_open(p->redirect_out, p->redirect_append ? FS_APPEND : FS_CREATE);
+        if (fd < 0) { printf("%s: not found\n", p->redirect_out); return; }
+        int n = fs_write(fd, cur, cur_len);
         fs_close(fd);
+        // Say so in the foreground (e.g. a full file, a bad value for a
+        // device); background jobs stay quiet, as they always have, so a
+        // job retrying every JOB_POLL_MS can't flood the terminal.
+        if (n < 0 && print_if_no_redirect) printf("%s: write failed\n", p->redirect_out);
     } else if (print_if_no_redirect) {
         for (int i = 0; i < cur_len; i++) putchar(cur[i]);
-        if (cur_len == 0 || cur[cur_len - 1] != '\n') putchar('\n');
+        // No output, no line: `rm`, a `grep` without matches, `cat` of an
+        // empty file print nothing, as in Unix. (picoos printed an empty
+        // line for those.) Output without a final '\n' still gets one.
+        if (cur_len > 0 && cur[cur_len - 1] != '\n') putchar('\n');
     }
 }
 
@@ -106,7 +118,8 @@ void job_list(void)
             for (int a = 0; a < slots[i].p.stages[s].argc; a++)
                 printf("%s ", slots[i].p.stages[s].argv[a]);
         }
-        if (slots[i].p.has_redirect_out) printf("> %s ", slots[i].p.redirect_out);
+        if (slots[i].p.has_redirect_out)
+            printf("%s %s ", slots[i].p.redirect_append ? ">>" : ">", slots[i].p.redirect_out);
         printf("&\n");
     }
     if (!any) printf("no background jobs\n");

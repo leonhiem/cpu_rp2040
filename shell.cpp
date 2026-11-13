@@ -46,11 +46,14 @@
  * has to actually wait on it), so a heater or lamp step "after" a
  * sleep line fired immediately instead of after the delay.
  *
- * Storage is a small RAM table (`scripts[SCRIPT_MAX]`) -- still RAM-only
- * on this board too, for now. The cpu_rp2040 board has an 8 KB FRAM
- * (drivers/fm24cl64.h), which is exactly what was missing in picoos:
- * the plan is still to swap what backs `scripts[]` without changing
- * `script`/`run`/`scripts` themselves -- next step, not this one.
+ * Scripts are files now (cpu_rp2040): `script <name>` saves to
+ * /fram/<name> on the FRAM, so it survives a power cycle -- the thing
+ * picoos never had. `run`/`loop <name>` look for /fram/<name> first,
+ * then the built-in table (`scripts[SCRIPT_MAX]`, RAM, compiled in);
+ * a name with a '/' in it is used as a path as-is. Being plain files,
+ * scripts can also be written or extended without `script` at all:
+ * `echo date >> /fram/boot`. If the FRAM isn't formatted (`mkfs /fram`),
+ * `script` falls back to the RAM table, as in picoos.
  *
  * `watch <ms> <stage> [| stage ...] [< path]` -- repeats a pipeline in
  * the foreground every <ms>, printing every time, until Ctrl-C (ASCII
@@ -98,9 +101,12 @@
  *
  * A "boot" script comes pre-loaded into scripts[0] -- baked into the
  * firmware image itself (BOOT_SCRIPT_TEXT below), so it's back after
- * every reboot. task_shell() auto-runs it on its very first tick,
- * before the prompt ever appears. On babywarmer this started the whole
- * heater wiring; on this general-purpose board it's deliberately tiny.
+ * every reboot. task_shell() auto-runs "boot" on its very first tick,
+ * before the prompt ever appears -- /fram/boot if it exists, which
+ * overrides the built-in one, so the board's power-up behavior is a
+ * file you edit, not firmware you rebuild. On babywarmer the boot
+ * script started the whole heater wiring; the built-in one here is
+ * deliberately tiny.
  *
  * `help` -- lists the builtins and the grammar. Builtins don't show up
  * in `ls` (only devices and programs do), so this is where to find them.
@@ -156,17 +162,13 @@ static int  run_pos = 0;          // offset of the next unread line in run_buf
 static bool looping = false;      // `loop` instead of `run`: restart run_buf from
                                    // the top when it ends, instead of stopping --
                                    // see the header comment's `loop` entry
-static int  run_slot = -1;        // which scripts[] entry run_buf was last loaded
-                                   // from -- needed to refresh it on a loop
-                                   // restart (see the header comment's `loop`
-                                   // entry: run_step() mutates run_buf in place
-                                   // as it goes, both its own '\n'->'\0' split
-                                   // and dispatch()'s strtok() collapsing every
-                                   // space to '\0' too, so replaying the same
-                                   // bytes a second time without reloading them
-                                   // from the pristine scripts[] copy first
-                                   // reads back garbage -- every previously-run
-                                   // line has shrunk to just its first word)
+static char run_name[JOB_TOK_MAX]; // what run_buf was last loaded from -- needed
+                                   // to reload it on a loop restart: run_step()
+                                   // turns each '\n' into '\0' as it goes, so
+                                   // replaying the same bytes a second time
+                                   // without reloading them reads back only the
+                                   // first line. (picoos also had strtok() shred
+                                   // run_buf; tokenize() works on its own copy now.)
 
 static bool watching = false;
 static pipeline_t watch_pipeline;
@@ -183,10 +185,10 @@ static void print_help(void)
            "jobs                 list background jobs\n"
            "kill %%<id>           stop a background job\n"
            "sleep <ms>           pause the shell, everything else keeps running\n"
-           "script <name>        record lines into a script, end with '.'\n"
-           "run <name>           replay a script\n"
+           "script <name>        record lines into /fram/<name>, end with '.'\n"
+           "run <name>           replay a script (/fram/<name>, else built-in)\n"
            "loop <name>          replay a script forever, Ctrl-C to stop\n"
-           "scripts              list scripts\n"
+           "scripts              list built-in scripts (files: ls /fram)\n"
            "watch <ms> <stage..> repeat a pipeline every <ms>, Ctrl-C to stop\n");
 }
 
@@ -195,7 +197,7 @@ static void print_prompt(void)
     printf(capturing ? "> " : "%% ");
 }
 
-// |, <, > and & are words of their own, with or without spaces around
+// '#' starts a comment. |, <, >, >> and & are words of their own, with or without spaces around
 // them -- `ls|grep dev` means the same as `ls | grep dev`, as in any
 // Unix shell. picoos only split on whitespace, so `ls|grep` came out as
 // one unknown program name. Done by copying the line with spaces put
@@ -206,8 +208,17 @@ static int tokenize(char *line, char *tokens[MAX_TOKENS])
 {
     static char spaced[LINE_MAX * 3];
     int len = 0;
-    for (const char *c = line; *c && len < (int)sizeof(spaced) - 3; c++) {
-        if (strchr("|<>&", *c)) {
+    for (const char *c = line; *c && len < (int)sizeof(spaced) - 4; c++) {
+        // A word starting with '#' is a comment: the rest of the line is
+        // ignored, as in sh/rc. Mid-word '#' (e.g. "a#b") is just a char.
+        if (*c == '#' && (c == line || c[-1] == ' ' || c[-1] == '\t')) break;
+        if (c[0] == '>' && c[1] == '>') {   // `>>` is one word, not two `>`
+            spaced[len++] = ' ';
+            spaced[len++] = '>';
+            spaced[len++] = '>';
+            spaced[len++] = ' ';
+            c++;
+        } else if (strchr("|<>&", *c)) {
             spaced[len++] = ' ';
             spaced[len++] = *c;
             spaced[len++] = ' ';
@@ -231,6 +242,7 @@ static bool parse_pipeline(char **tok, int ntok, pipeline_t *p, bool *background
     p->nstages = 1;
     p->stages[0].argc = 0;
     p->has_redirect_out = false;
+    p->redirect_append = false;
     p->has_redirect_in = false;
     *background = false;
 
@@ -242,8 +254,9 @@ static bool parse_pipeline(char **tok, int ntok, pipeline_t *p, bool *background
             if (p->nstages >= JOB_MAX_STAGES) { printf("too many pipeline stages\n"); return false; }
             stage = &p->stages[p->nstages++];
             stage->argc = 0;
-        } else if (strcmp(t, ">") == 0) {
-            if (++i >= ntok) { printf("> needs a path\n"); return false; }
+        } else if (strcmp(t, ">") == 0 || strcmp(t, ">>") == 0) {
+            p->redirect_append = (t[1] == '>');
+            if (++i >= ntok) { printf("%s needs a path\n", t); return false; }
             strncpy(p->redirect_out, tok[i], JOB_TOK_MAX - 1);
             p->redirect_out[JOB_TOK_MAX - 1] = '\0';
             p->has_redirect_out = true;
@@ -275,6 +288,47 @@ static int find_script(const char *name)
     return -1;
 }
 
+// Loads script <name> into run_buf: a path as-is if it contains '/',
+// else /fram/<name>, else the built-in table. Remembers the name in
+// run_name, for loop restarts. False if it's nowhere.
+static bool load_script(const char *name)
+{
+    char path[JOB_TOK_MAX];
+    if (strchr(name, '/')) snprintf(path, sizeof(path), "%s", name);
+    else                   snprintf(path, sizeof(path), "/fram/%s", name);
+
+    int n = -1;
+    int fd = fs_open(path);
+    if (fd >= 0) {
+        n = fs_read(fd, run_buf, SCRIPT_TEXT_MAX - 1);
+        fs_close(fd);
+    }
+    if (n >= 0) {
+        run_buf[n] = '\0';
+    } else {
+        int slot = find_script(name);
+        if (slot < 0) return false;
+        strncpy(run_buf, scripts[slot].text, SCRIPT_TEXT_MAX - 1);
+        run_buf[SCRIPT_TEXT_MAX - 1] = '\0';
+    }
+    snprintf(run_name, sizeof(run_name), "%s", name);
+    run_pos = 0;
+    return true;
+}
+
+// Saves a captured script as /fram/<name>. False if there's no
+// filesystem (or it's full), so the caller can fall back to RAM.
+static bool save_script_file(const char *name, const char *text, int len)
+{
+    char path[JOB_TOK_MAX];
+    snprintf(path, sizeof(path), "/fram/%s", name);
+    int fd = fs_open(path, FS_CREATE);
+    if (fd < 0) return false;
+    int n = fs_write(fd, text, len);
+    fs_close(fd);
+    return n == len;
+}
+
 // Appends one typed line to the script currently being captured, or
 // finalizes it on a lone ".". Not called while a script is running --
 // run replays through dispatch(), never through capture.
@@ -282,6 +336,12 @@ static void capture_line(const char *line)
 {
     if (strcmp(line, ".") == 0) {
         capture_buf[capture_len] = '\0';
+        capturing = false;
+        if (save_script_file(capture_name, capture_buf, capture_len)) {
+            printf("saved /fram/%s (%d bytes)\n", capture_name, capture_len);
+            return;
+        }
+        printf("could not save /fram/%s (no filesystem? full? name over 11 chars?), keeping it in RAM only\n", capture_name);
         int slot = find_script(capture_name);
         if (slot < 0) {
             for (int i = 0; i < SCRIPT_MAX; i++) {
@@ -296,9 +356,8 @@ static void capture_line(const char *line)
             strncpy(scripts[slot].text, capture_buf, SCRIPT_TEXT_MAX - 1);
             scripts[slot].text[SCRIPT_TEXT_MAX - 1] = '\0';
             scripts[slot].used = true;
-            printf("script '%s' saved (%d bytes)\n", capture_name, capture_len);
+            printf("script '%s' saved in RAM (%d bytes)\n", capture_name, capture_len);
         }
-        capturing = false;
         return;
     }
 
@@ -351,34 +410,24 @@ static void dispatch(char *line)
         return; // prompt becomes "> " until capture ends
     }
     if (strcmp(tok[0], "scripts") == 0) {
-        bool any = false;
-        for (int i = 0; i < SCRIPT_MAX; i++) {
-            if (scripts[i].used) { printf("%s\n", scripts[i].name); any = true; }
-        }
-        if (!any) printf("no scripts\n");
+        // Built-in/RAM ones only: scripts on the FRAM are plain files,
+        // listed by `ls /fram` along with everything else stored there.
+        for (int i = 0; i < SCRIPT_MAX; i++)
+            if (scripts[i].used) printf("%s (built-in/RAM)\n", scripts[i].name);
+        printf("files: ls /fram\n");
         return;
     }
     if (strcmp(tok[0], "run") == 0) {
         if (ntok < 2) { printf("usage: run <name>\n"); return; }
         if (running) { printf("run: already running a script\n"); return; }
-        int slot = find_script(tok[1]);
-        if (slot < 0) { printf("run: no such script '%s'\n", tok[1]); return; }
-        strncpy(run_buf, scripts[slot].text, SCRIPT_TEXT_MAX - 1);
-        run_buf[SCRIPT_TEXT_MAX - 1] = '\0';
-        run_pos = 0;
-        run_slot = slot;
+        if (!load_script(tok[1])) { printf("run: no such script '%s'\n", tok[1]); return; }
         running = true;
         return; // task_shell() drives it from here, one line per tick -- see run_step()
     }
     if (strcmp(tok[0], "loop") == 0) {
         if (ntok < 2) { printf("usage: loop <name>\n"); return; }
         if (running) { printf("loop: already running a script\n"); return; }
-        int slot = find_script(tok[1]);
-        if (slot < 0) { printf("loop: no such script '%s'\n", tok[1]); return; }
-        strncpy(run_buf, scripts[slot].text, SCRIPT_TEXT_MAX - 1);
-        run_buf[SCRIPT_TEXT_MAX - 1] = '\0';
-        run_pos = 0;
-        run_slot = slot;
+        if (!load_script(tok[1])) { printf("loop: no such script '%s'\n", tok[1]); return; }
         running = true;
         looping = true;
         printf("looping '%s' -- Ctrl-C to stop\n", tok[1]);
@@ -400,12 +449,12 @@ static void dispatch(char *line)
         return; // no normal prompt -- watch prints its own lines until stopped
     }
     if (tok[0][0] == '\0') return;
-    if (strcmp(tok[0], "|") == 0 || strcmp(tok[0], ">") == 0) {
+    if (strcmp(tok[0], "|") == 0 || strcmp(tok[0], ">") == 0 || strcmp(tok[0], ">>") == 0) {
         printf("empty pipeline\n");
         return;
     }
 
-    pipeline_t p;
+    static pipeline_t p;   // ~650 bytes: static for the same reason as jobs.cpp's buffers
     bool background;
     if (!parse_pipeline(tok, ntok, &p, &background)) return;
     if (p.stages[0].argc == 0) return; // e.g. line was just "&"
@@ -450,15 +499,13 @@ void task_shell(void)
         printf("  help          builtins and grammar\n");
         banner_shown = true;
 
-        // Auto-run 'boot'. scripts[0] is always seeded with "boot" (see
-        // BOOT_SCRIPT_TEXT above), so find_script() only fails here if
-        // something someday changes that.
-        int slot = find_script("boot");
-        if (slot >= 0) {
-            printf("running 'boot' automatically...\n");
-            strncpy(run_buf, scripts[slot].text, SCRIPT_TEXT_MAX - 1);
-            run_buf[SCRIPT_TEXT_MAX - 1] = '\0';
-            run_pos = 0;
+        // Auto-run 'boot': /fram/boot if it exists, else the built-in one.
+        // scripts[0] is always seeded with "boot" (see BOOT_SCRIPT_TEXT
+        // above), so load_script() only fails here if that ever changes.
+        if (load_script("boot")) {
+            int fd = fs_open("/fram/boot");
+            printf("running %s automatically...\n", fd >= 0 ? "/fram/boot" : "built-in 'boot'");
+            fs_close(fd);
             running = true; // picked up by the `if (running)` block below,
                              // same tick -- first line runs immediately
         } else {
@@ -479,21 +526,13 @@ void task_shell(void)
         if (!running) {
             if (looping) {
                 // Script reached its end -- restart it instead of stopping.
-                // run_buf must be reloaded from the pristine scripts[]
-                // text, not just rewound -- run_step() below and
-                // dispatch()'s own strtok() both mutate run_buf's bytes
-                // in place as a line is consumed ('\n' and every space
-                // become '\0'), which a plain `run` never revisits but a
-                // restart would, reading back a shredded first word of
-                // each line instead of the real line. Re-copying here
-                // undoes that damage before line 1 runs again; next
-                // tick's run_step() then picks up line 1 fresh, same
-                // "picked up same shape, next tick" pattern task_shell()'s
-                // own boot auto-run already uses.
-                strncpy(run_buf, scripts[run_slot].text, SCRIPT_TEXT_MAX - 1);
-                run_buf[SCRIPT_TEXT_MAX - 1] = '\0';
-                run_pos = 0;
-                running = true;
+                // run_buf must be reloaded, not just rewound: run_step()
+                // turned every '\n' into '\0' on the way through (see
+                // run_name). Reloading also picks up an edited script
+                // file on the next pass. Next tick's run_step() then
+                // starts at line 1 fresh.
+                running = load_script(run_name);
+                if (!running) { looping = false; printf("loop: '%s' is gone\n", run_name); print_prompt(); }
             } else if (!sleeping) {
                 print_prompt(); // script just finished, and didn't end mid-sleep
             }
@@ -547,6 +586,11 @@ void task_shell(void)
             line_len = 0;
             // sleep/run/watch set their own flag; each prints its own prompt once done instead
             if (!sleeping && !running && !watching) print_prompt();
+            // ...and owns the shell from here: stop reading, leave whatever
+            // else was typed (or pasted) in the USB buffer until it's done.
+            // picoos kept reading, so a pasted line after `run x` or
+            // `sleep 1000` ran right away, mixed into the script.
+            else break;
         } else if (c == 8 || c == 127) { // backspace / DEL
             if (line_len > 0) {
                 line_len--;
