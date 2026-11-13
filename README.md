@@ -10,7 +10,7 @@ two header rows exposing all GPIOs, plus:
 - **PCF8563T** real-time clock (I2C1, address `0x51`; `INT`/`CLKOUT` on pads only)
 - **FM24CL64B** 8 KB FRAM (I2C1, address `0x50`; `WP` tied to GND)
 
-Pin map: [`board.h`](board.h).
+Pin map: [`board.h`](board.h). Ideas and open items: [`TODO.md`](TODO.md).
 
 ## Hardware notes
 
