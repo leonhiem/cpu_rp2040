@@ -40,7 +40,12 @@
                           // reach 11 jobs, and LED wiring (the next piece) will
                           // add more; given real headroom this time, same lesson
                           // as every other capacity bump this session.
-#define STAGE_BUF     1024 // ls's own listing grows with every device/program
+#define STAGE_BUF     4096 // 2026-11-13 (cpu_rp2040): 1024 -> 4096 for hexdump,
+                            // whose 79-char lines per 16 bytes fit only ~192
+                            // bytes of dump in 1 KB (~800 in 4 KB). Costs 6 KB
+                            // RAM (two static buffers in jobs.cpp). Files stay
+                            // at most 1 KB (fs/framfs.h), independently.
+                            // ls's own listing grows with every device/program
                             // added -- 256 silently truncated it once (the bug
                             // that surfaced the whole snprintf-overcounting
                             // class of fix), then 512 hit the same wall again,

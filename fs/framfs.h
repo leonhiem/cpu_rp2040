@@ -31,7 +31,7 @@
  */
 #pragma once
 
-#define FRAMFS_MAX_FILE  1024   // fits jobs.h's STAGE_BUF: pipes pass whole buffers
+#define FRAMFS_MAX_FILE  1024   // keeps the append buffer and fs_pread()'s fallback small
 #define FRAMFS_NAME_MAX  11
 
 bool framfs_mount(void);                 // true if the FRAM holds a filesystem

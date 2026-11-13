@@ -51,7 +51,12 @@ A crontab on the FRAM, driven by the RTC: run commands at set times.
   impossible at a 1 s check, but a reboot at :59 could skip a minute;
   fine for logging, worth a note.
 
-### 2. hexdump
+### 2. hexdump — done 2026-11-13
+
+Built as below: `hexdump [-s] [-n] [path]`, `fs_pread()`, read-only
+`/dev/fram` and `/dev/mem`, STAGE_BUF 4 KB. See the README. Original notes:
+
+#### (original idea)
 
 `hexdump` in the classic `hexdump -C` layout: offset, 16 bytes in hex,
 the same bytes as ASCII:
@@ -95,6 +100,9 @@ all of them.
   more than leaving out `grep`.
 - Whole features worth a switch: the FRAM filesystem, cron, the TFT,
   `bringup`-style tests.
+- Real numbers to design it around are in the README ("If space ever gets
+  tight"): job slots 13 KB RAM, pipe buffers 6 KB RAM, hexdump 1.5 KB
+  flash, /dev/mem + /dev/fram + fs_pread under 1 KB flash together.
 
 ### 4. Hour counter (power-fail safe)
 
@@ -153,9 +161,14 @@ Further thoughts:
 
 ## Known open items
 
-- **babywarmer back on this board**: heater, NTC/ADS1115, 7-segment,
-  PID/phase/alarm wiring, from picoos. The ADS1115 (`0x48`) can share
-  I2C1 with the RTC and FRAM, freeing GPIO 12/13.
+- **babywarmer back, later**: cpu_rp2040 (73 × 54 mm, 2 × 20-pin
+  headers, USB-C powered) will be the *daughter board* of the next
+  babywarmer PCB. Buzzer, LEDs, 7-segment, TFT, ADC front end and power
+  supply live on that carrier board, so the heater, NTC/ADS1115,
+  7-segment and PID/phase/alarm code from picoos waits until it exists.
+  Pins stay as on babywarmer (buttons, TFT, heater, 7-segment). The
+  ADS1115 goes on GPIO12 (SDA) / GPIO13 (SCL), which the headers export;
+  the RTC/FRAM bus on GPIO14/15 stays local to this board.
 - **ST7735 TFT, on core 1**: the stack fix (2026-11-12) made core 1 safe
   to use. `klog`'s "no locks needed" assumption ends there (see
   `kernel/klog.h`); anything shared between cores needs a look.
@@ -163,6 +176,13 @@ Further thoughts:
   line into a file, crontabs included.
 - **Streaming or larger pipes**: whole 1 KB buffers limit file size,
   `ls` output, hexdump.
+- **More arguments per stage**: `JOB_MAX_ARGS` is 6 (5 arguments), so
+  `echo` takes at most 5 words. Each extra argument costs
+  4 stages × 24 bytes × 20 job slots ≈ 2 KB RAM; a smarter layout (one
+  shared text buffer per pipeline instead of fixed 24-byte slots) would
+  allow more for less.
+- **`shred` / wiping `rm`**: `rm` frees blocks but leaves the bytes (see
+  the README's "What `rm` does").
 - **Per-job poll rate**: all background jobs run every 150 ms.
 - **`hyst` shares one state** between all its users (from picoos).
 - **`fsck /fram`**: reclaim blocks leaked by a power cut mid-write

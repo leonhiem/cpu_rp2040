@@ -129,6 +129,20 @@ int fs_write(int fd, const char *buf, int len)
     return devices[fd]->write(buf, len);
 }
 
+int fs_pread(int fd, char *buf, int len, uint32_t offset)
+{
+    if (file_slot(fd) < 0 && fd >= 0 && fd < device_count && devices[fd]->pread)
+        return devices[fd]->pread(buf, len, offset);
+
+    static char whole[1024]; // device values are short; files are <= 1 KB
+    int n = fs_read(fd, whole, sizeof(whole));
+    if (n < 0) return -1;
+    if (offset >= (uint32_t)n) return 0;
+    int m = n - (int)offset < len ? n - (int)offset : len;
+    memcpy(buf, whole + offset, m);
+    return m;
+}
+
 int fs_remove(const char *path)
 {
     const char *name;

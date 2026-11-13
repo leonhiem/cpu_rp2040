@@ -14,6 +14,8 @@ Pin map: [`board.h`](board.h). Ideas and open items: [`TODO.md`](TODO.md).
 
 ## Hardware notes
 
+- **Chip revision: RP2040 B2.** Read from the boot ROM's version byte
+  (`hexdump -s 0x13 -n 1 /dev/mem` → `03`).
 - **GPIOs are 3.3 V only, never wire a load to +5 V.** The first test
   LED had its anode on +5 V (cathode via 220 Ω to GPIO1). It blinked
   fine, but whenever the pin is high or unconfigured (every reset and
@@ -142,6 +144,8 @@ the LAMP button to the lamp output, as on babywarmer
 | `/dev/cputemp` | read | RP2040 die temperature, °C (rough, a few degrees). Each read averages 16 ADC samples. |
 | `/dev/reboot` | write | `now` reboots, `bootsel` reboots into the USB bootloader. |
 | `/fram/<name>` | read/write | Files on the FRAM, see [Files on the FRAM](#files-on-the-fram-fram). |
+| `/dev/fram` | read | The raw FRAM chip, all 8 KB, filesystem structures included. Read-only. Use `hexdump`. |
+| `/dev/mem` | read | RP2040 memory by address (offset = address): boot ROM `0x0`, flash `0x10000000`, RAM `0x20000000`. Anything else is refused (no crash). Read-only. Use `hexdump`. |
 
 ### Programs (`bin/...`)
 
@@ -168,6 +172,7 @@ the LAMP button to the lamp output, as on babywarmer
 | `rm` | `rm <path...>` | Remove files. |
 | `df` | `df` | Total, used and free space on every mount. |
 | `mkfs` | `mkfs /fram` | Format: every file on it is gone. Never happens on its own. |
+| `hexdump` | `hexdump [-s off] [-n len] [path]` | Hex + ASCII, `hexdump -C` layout, of a path or piped input. Repeated lines become `*`. See [hexdump](#hexdump). |
 
 Builtins (`help` lists them; they're not in `ls`, like `cd` isn't on
 `$PATH`): `jobs`, `kill %<id>`, `sleep <ms>`, `script <name>`,
@@ -246,6 +251,16 @@ rm /fram/a.txt
 df
 ```
 
+**Looking at raw bytes**
+
+```
+hexdump /fram/boot                   # a file, as bytes
+cat /dev/rtc | hexdump               # anything piped
+hexdump /dev/fram                    # the whole FRAM, one screen (thanks to '*')
+hexdump -s 0x40 -n 64 /dev/fram      # the first four directory entries
+hexdump -s 0x10000000 -n 64 /dev/mem # start of the flash: boot2
+```
+
 **Maintenance**
 
 ```
@@ -270,7 +285,8 @@ df
 ```
 
 - **Flat names, 1–11 characters**, no directories, no spaces or `/`.
-- **At most 32 files, each at most 1 KB** (pipes pass whole 1 KB buffers).
+- **At most 32 files, each at most 1 KB** (a simple, safe append path that
+  rewrites the whole file; pipes themselves carry 4 KB).
   7360 bytes of space, in 64-byte blocks: a 3-byte file uses 64.
 - **Never formatted automatically.** A blank FRAM at boot just says
   `fram: no filesystem, run: mkfs /fram`, so a glitch can't wipe files.
@@ -370,6 +386,229 @@ finds the mount for `/fram` and hands `a.txt` to the filesystem. Programs
 can't tell files from devices. Plan 9's idea of mounting a file server
 into the namespace, still in one global namespace.
 
+### hexdump
+
+`hexdump [-s offset] [-n length] [path]` shows bytes in the classic
+`hexdump -C` layout: offset, 16 bytes in hex, the same 16 as ASCII
+(`.` for anything not printable). `-s` and `-n` take decimal or `0x` hex.
+
+```
+% hexdump /fram/a.txt
+00000000  68 65 6c 6c 6f 20 77 6f  72 6c 64 0a              |hello world.|
+0000000c
+```
+
+- **The last line is the offset where the dump ended**, as in Unix: here
+  `0xc`, 12 bytes.
+- **Identical lines in a row show as one `*`.** The empty parts of the
+  FRAM collapse that way, so `hexdump /dev/fram` shows the whole chip.
+- **A path or a pipe.** `hexdump /fram/a.txt` and `cat /fram/a.txt |
+  hexdump` print the same. With a path, hexdump reads at offsets itself
+  (`fs_pread()`, 256 bytes at a time), which is what makes the raw
+  devices work: `/dev/fram` (the chip) and `/dev/mem` (memory by
+  address, where the offset *is* the address).
+- **One screen at most.** The output has to fit one pipe buffer (4 KB, ~50
+  lines, ~800 bytes without `*` lines). When it doesn't, the dump stops
+  at a line and the last line tells you how to go on:
+
+  ```
+  -- more: hexdump -s 0x1330 -n 1232 /dev/fram
+  ```
+
+  Copy, paste, next screen.
+
+**/dev/mem: only safe regions.** Reading an unmapped address makes the
+RP2040 crash (bus fault), and reading some peripheral registers changes
+them (a FIFO loses its data). So `/dev/mem` only reads the boot ROM
+(`0x00000000`, 16 KB), the flash (`0x10000000`, 2 MB) and RAM
+(`0x20000000`, 264 KB); anything else is a `read error`, never a crash.
+Both raw devices are read-only.
+
+### Looking inside the filesystem with hexdump
+
+A real dump from the board (2026-11-13), holding two files: `log`
+(35 bytes) and `boot` (89 bytes). Earlier, `a.txt` and `t` had been
+created and removed.
+
+```
+% hexdump /dev/fram
+00000000  70 66 73 31 01 00 40 00  80 00 20 00 00 00 00 00  |pfs1..@... .....|
+00000010  00 00 00 00 00 00 00 00  bf ff f7 ff bf ff f7 ff  |................|
+*
+00000040  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  |................|
+00000050  6c 6f 67 00 00 00 00 00  00 00 00 00 23 00 0f 00  |log.........#...|
+00000060  62 6f 6f 74 00 00 00 00  00 00 00 00 59 00 0d 00  |boot........Y...|
+00000070  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  |................|
+*
+00000250  00 00 00 00 00 00 00 00  00 00 10 00 00 00 ff ff  |................|
+00000260  ff ff 00 00 00 00 00 00  00 00 00 00 00 00 00 00  |................|
+00000270  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  |................|
+*
+00000340  64 61 74 65 20 20 20 20  20 20 20 23 20 6d 79 20  |date       # my |
+00000350  6f 77 6e 20 62 6f 6f 74  0a 74 6f 67 67 6c 65 20  |own boot.toggle |
+00000360  2f 64 65 76 2f 62 75 74  74 6f 6e 73 2f 6c 61 6d  |/dev/buttons/lam|
+00000370  70 20 2f 64 65 76 2f 6c  61 6d 70 20 26 0a 65 63  |p /dev/lamp &.ec|
+00000380  68 69 0a 6c 6f 0a 61 67  61 69 6e 0a bf ff f7 ff  |hi.lo.again.....|
+00000390  00 00 00 00 00 00 00 00  bf ff f7 ff bf ff f7 ff  |................|
+*
+000003c0  46 72 69 20 4e 6f 76 20  31 33 20 32 31 3a 35 37  |Fri Nov 13 21:57|
+000003d0  3a 33 36 20 32 30 32 36  0a 74 65 6d 70 20 32 30  |:36 2026.temp 20|
+000003e0  2e 32 0a 00 00 00 00 00  bf ff f7 ff bf ff f7 ff  |.2..............|
+000003f0  00 00 00 00 00 00 00 00  bf ff f7 ff bf ff f7 ff  |................|
+00000400  68 6f 20 68 65 6c 6c 6f  20 66 72 6f 6d 20 2f 66  |ho hello from /f|
+00000410  72 61 6d 2f 62 6f 6f 74  0a ff f7 ff bf ff f7 ff  |ram/boot........|
+00000420  00 00 00 00 00 00 00 00  bf ff f7 ff bf ff f7 ff  |................|
+*
+00002000
+```
+
+Reading it (numbers are little-endian: `23 00` is 0x23 = 35):
+
+- **`0x000` superblock (block 0):** `pfs1`, version `01`, block size
+  `40 00` (64), `80 00` (128) blocks, `20` (32) directory entries.
+- **`0x040` directory (blocks 1–8), 16 bytes per entry:** name, size,
+  first block.
+  - Entry 0 is all zeros: free. `a.txt`, and later `t`, lived there.
+  - `log`: size `23 00` = 35 bytes, first block `0f 00` = 15.
+  - `boot`: size `59 00` = 89 bytes, first block `0d 00` = 13.
+- **`0x240` chain table (blocks 9–12):** 2 bytes per block; block *n*'s
+  entry is at `0x240 + 2n`.
+  - Block 13 (`0x25a`): `10 00` = next is block 16. `boot` is 89 bytes,
+    more than one 64-byte block, so it's a chain of two blocks, and
+    they aren't even neighbours: the FAT idea at work.
+  - Block 14 (`0x25c`): `00 00` = free.
+  - Blocks 15 and 16 (`0x25e`, `0x260`): `ff ff` = END.
+- **Data, block *n* at *n* × 64:**
+  - Block 13 (`0x340`): the first 64 bytes of `boot`.
+  - Block 16 (`0x400`): its last 25 bytes, `ho hello from /fram/boot`.
+  - Block 15 (`0x3c0`): `log`.
+- **Deleted data stays until it's overwritten.** Free block 14 (`0x380`)
+  reads `hi\nlo\nagain\n`: it held `a.txt` (`hello\nagain\n`), was
+  reused for `t` (`hi\n`, overwriting only the first three bytes), and
+  both were removed. `rm` frees blocks, it doesn't wipe them, as on a
+  real disk. Worth knowing before storing anything sensitive.
+- **`bf ff f7 ff` and runs of `00`:** whatever the chip held before. `mkfs`
+  writes only the superblock, directory and chain table, never the data
+  area, and a file only overwrites the bytes it needs.
+
+### What `rm` does, step by step
+
+A PC simulation of the FRAM (same code as on the board), starting from a
+fresh `mkfs` on an all-zero chip. A short file `a` and a two-block file
+`fox`, built with four `>>` appends:
+
+```
+% echo hi > /fram/a
+% echo the quick brown fox > /fram/fox
+% echo jumps over the lazy >> /fram/fox
+% echo dog, and back again, >> /fram/fox
+% echo all day long. >> /fram/fox
+% ls -l /fram
+/fram/a                  3
+/fram/fox                75
+% df
+/fram     7360 total   192 used  7168 free
+```
+
+**1. Before `rm`.** Directory, chain table, data:
+
+```
+% hexdump -s 0x40 -n 32 /dev/fram
+00000040  61 00 00 00 00 00 00 00  00 00 00 00 03 00 0d 00  |a...............|
+00000050  66 6f 78 00 00 00 00 00  00 00 00 00 4b 00 0f 00  |fox.........K...|
+00000060
+% hexdump -s 0x250 -n 16 /dev/fram
+00000250  00 00 00 00 00 00 00 00  00 00 ff ff 00 00 10 00  |................|
+00000260
+% hexdump -s 0x340 -n 256 /dev/fram
+00000340  68 69 0a 00 00 00 00 00  00 00 00 00 00 00 00 00  |hi..............|
+00000350  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  |................|
+*
+00000380  74 68 65 20 71 75 69 63  6b 20 62 72 6f 77 6e 20  |the quick brown |
+00000390  66 6f 78 0a 6a 75 6d 70  73 20 6f 76 65 72 20 74  |fox.jumps over t|
+000003a0  68 65 20 6c 61 7a 79 0a  64 6f 67 2c 20 61 6e 64  |he lazy.dog, and|
+000003b0  20 62 61 63 6b 20 61 67  61 69 6e 2c 0a 00 00 00  | back again,....|
+000003c0  74 68 65 20 71 75 69 63  6b 20 62 72 6f 77 6e 20  |the quick brown |
+000003d0  66 6f 78 0a 6a 75 6d 70  73 20 6f 76 65 72 20 74  |fox.jumps over t|
+000003e0  68 65 20 6c 61 7a 79 0a  64 6f 67 2c 20 61 6e 64  |he lazy.dog, and|
+000003f0  20 62 61 63 6b 20 61 67  61 69 6e 2c 0a 61 6c 6c  | back again,.all|
+00000400  20 64 61 79 20 6c 6f 6e  67 2e 0a 00 00 00 00 00  | day long.......|
+00000410  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  |................|
+*
+00000440
+```
+
+- `a`: 3 bytes, block 13 (`0x340`), chain `ff ff` = END.
+- `fox`: `4b 00` = 75 bytes, first block `0f 00` = **15**; chain:
+  block 15 (`0x25e`) → `10 00` = block 16; block 16 → END (at `0x260`,
+  just past this window).
+- Data: block 15 (`0x3c0`) and block 16 (`0x400`) hold all 75 bytes.
+- **Block 14 (`0x380`) is free but not empty**: it holds `fox` *as it
+  was before the last `>>`*. An append writes the whole file again into
+  free blocks, and only then frees the old copy: that's what makes it
+  power-cut safe (old or new, never half), and it leaves old versions
+  behind in free blocks. Here the third version ended up in block 14,
+  the fourth (current) in blocks 15–16.
+
+**2. After `rm /fram/fox`.**
+
+```
+% rm /fram/fox
+% ls -l /fram
+/fram/a                  3
+% df
+/fram     7360 total    64 used  7296 free
+% hexdump -s 0x40 -n 32 /dev/fram
+00000040  61 00 00 00 00 00 00 00  00 00 00 00 03 00 0d 00  |a...............|
+00000050  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  |................|
+00000060
+% hexdump -s 0x250 -n 16 /dev/fram
+00000250  00 00 00 00 00 00 00 00  00 00 ff ff 00 00 00 00  |................|
+00000260
+```
+
+`rm` changed exactly two things:
+
+- **The directory entry** at `0x50` is all zeros: free.
+- **The chain entries** of blocks 15 and 16 are `00 00`: free. `df`
+  agrees: 192 → 64 bytes used.
+
+And one thing it did **not** change: **the data**. A hexdump of
+`0x340`–`0x440` after `rm` is byte for byte the same as before: the
+whole text is still in blocks 14, 15 and 16. Nothing points at it any
+more, so `ls`, `cat` and `df` can't see it, but the bytes are there
+until a new file needs those blocks.
+
+**3. A new file reuses the space.**
+
+```
+% echo new > /fram/b
+% hexdump -s 0x40 -n 32 /dev/fram
+00000040  61 00 00 00 00 00 00 00  00 00 00 00 03 00 0d 00  |a...............|
+00000050  62 00 00 00 00 00 00 00  00 00 00 00 04 00 0e 00  |b...............|
+00000060
+% hexdump -s 0x250 -n 16 /dev/fram
+00000250  00 00 00 00 00 00 00 00  00 00 ff ff ff ff 00 00  |................|
+00000260
+% hexdump -s 0x380 -n 16 /dev/fram
+00000380  6e 65 77 0a 71 75 69 63  6b 20 62 72 6f 77 6e 20  |new.quick brown |
+00000390
+```
+
+- `b` takes the first free directory entry (the one `fox` had) and the
+  first free block, 14.
+- Only its 4 bytes are written: `new\n` overwrites `the ` and the rest
+  of the old text, `quick brown fox ...`, stays in the block behind
+  `b`'s end. `cat /fram/b` shows `new`, because the size says 4.
+
+That's the same thing seen in the real dump above, where block 14 read
+`hi\nlo\nagain\n`. Like a real disk: deleting frees space, it doesn't
+erase. **Overwriting doesn't wipe either**: `echo x > /fram/secret`
+writes the new contents into *free* blocks first and only then frees
+the old ones (that's the power-cut safety), so the old bytes stay where
+they were. Really wiping a file needs a dedicated tool (an idea for
+later, see `TODO.md`: `shred`, or an `rm` that zeroes blocks).
+
 ### Extending picoos
 
 The rule from picoos holds: **a device owns hardware, a program only
@@ -428,16 +667,21 @@ Then: add the file to `CMakeLists.txt`, declare and call its
 of a filesystem. `dev/fram.cpp` is the example: twelve lines that put
 `fs/framfs.h` at `/fram`.
 
-Capacities (2026-11-12): 64 devices (`FS_MAX_DEVICES`, 14 used), 48
-programs (`PROG_MAX`, 20 used), 4 mounts (1 used), 4 files open at once,
+Capacities (2026-11-13): 64 devices (`FS_MAX_DEVICES`, 16 used), 48
+programs (`PROG_MAX`, 21 used), 4 mounts (1 used), 4 files open at once,
 20 background jobs, 32 tasks (21 used: the shell + the 20 job slots).
 Every table says so loudly on the console when it's full, rather than
 dropping an entry silently (a lesson picoos learned three times).
 
 ### Known limits
 
-- **Pipes pass whole buffers, 1 KB each** (`STAGE_BUF`), not streams. That's
-  also why files are at most 1 KB.
+- **Pipes pass whole buffers, 4 KB each** (`STAGE_BUF`, was 1 KB until
+  hexdump), not streams. Long output (a big `hexdump`) has to be paged
+  with `-s`. Files are at most 1 KB, separately (`fs/framfs.h`).
+- **At most 5 arguments per program** (`JOB_MAX_ARGS 6`, the program
+  name included, from picoos): `echo` with more words fails with
+  `too many args in one stage`. Build long lines from several `>>`
+  appends, or use `script`. Raising it costs RAM in every job slot.
 - **No quotes, no variables, no `$(...)`** in the shell. `label` covers the
   most common need ("some text: a device's value").
 - **One shared poll rate** for all background jobs (150 ms).
@@ -488,6 +732,21 @@ session with `>>`, scripts and `/fram/boot`). On the board:
 | Stack fix (pipe buffers static): no visible change expected, everything above should behave the same | ok: nothing changed |
 | Shell fix found on the PC: lines typed or pasted after `run`/`sleep`/`watch` ran immediately, mixed into the script (inherited from picoos). Now they wait until it's done. Paste e.g. `sleep 2000` + `echo after` in one go | ok: `after` came after the sleep |
 
+**2026-11-13, hexdump, `/dev/fram`, `/dev/mem`** (`picoos.uf2`): tested
+on the PC (all of `hexdump` against a simulated FRAM, incl. `*`
+collapsing, `-s`/`-n`, the `-- more:` hint, edge cases). On the board:
+
+| Test | Result |
+|---|---|
+| `hexdump /fram/boot`, `cat /fram/boot \| hexdump` | ok: all three spellings (path, `\|` with and without spaces) identical, 0x59 = 89 bytes = what `ls -l` says; `0a` line ends and the `#` comment visible as stored |
+| `hexdump /dev/fram`: superblock `pfs1`, directory with `log`/`boot` | ok: whole chip on one screen; superblock, directory (`log` 35 B at block 15, `boot` 89 B at block 13), chain 13 → 16 → END, data all where they should be. Annotated in [Looking inside the filesystem](#looking-inside-the-filesystem-with-hexdump) |
+| `hexdump -s 0x10000000 -n 64 /dev/mem` (flash) | ok: boot2, the SDK's second-stage bootloader for the W25Q16JV (first 256 bytes of flash); starts `00 b5` = Thumb `push {lr}` |
+| `hexdump -s 0x20000000 -n 64 /dev/mem` (RAM) | ok: the vector table, which the SDK copies to the start of RAM at startup (so drivers can install interrupt handlers): `00 20 04 20` = initial stack pointer 0x20042000 (`__StackTop` in the map file), `f7 01 00 10` = reset handler 0x100001f7 (Thumb bit set), then NMI, HardFault, and the SDK's catch-all handler `0x100001c1` |
+| `hexdump -n 64 /dev/mem` (boot ROM) | ok: the ROM's vector table (stack `0x20041f00`, reset `0xeb`), then at `0x10` the magic `4d 75 01` (`'M' 'u' 0x01`) and at `0x13` the ROM version `03`: **this board's RP2040 is a B2** (B0 = 1, B1 = 2, B2 = 3) |
+| `hexdump -s 0x30000000 /dev/mem`: refused with `read error`, no crash | ok: `hexdump: read error at 0x30000000`, prompt back, board keeps running |
+| A dump too long for one screen ends with `-- more:` | ok: `hexdump -s 0x10000000 /dev/mem` stops after 58 lines (a `*` saved room) with `-- more: hexdump -s 0x100003a0 /dev/mem`. Along the way: boot2's CRC32 in its last 4 bytes (`0x100000fc`: `74 b2 4e 7a`), the vector table at `0x10000100` (same as the RAM copy), the SDK's binary-info marker `0x7188ebf2` at `0x100001d4` |
+| STAGE_BUF 1 KB → 4 KB: `ls` and friends unchanged | ok: `ls` complete (16 devices, `/fram/`, 21 programs) |
+
 ## `bringup` — board test
 
 Kept as a permanent test program: flash it whenever a board needs
@@ -517,21 +776,38 @@ press/release is printed (mute, up, down, manual, start, lamp).
 
 ## Resources and future hardware
 
-### What picoos uses now (measured 2026-11-12)
+### What picoos uses now (measured 2026-11-12, updated 2026-11-13 with hexdump)
 
 | | Used | Available | |
 |---|---|---|---|
-| Flash (W25Q16JV) | 85 KB (`picoos.bin`) | 2048 KB | 4 % |
-| RAM | ~37 KB | 264 KB | 14 % |
+| Flash (W25Q16JV) | 87 KB (`picoos.bin`) | 2048 KB | 4 % |
+| RAM | ~45 KB | 264 KB | 17 % |
 | Stack, worst path | ~1 KB | 2 KB reserved | ok |
 | FRAM | ~1 KB metadata | 8 KB | the real limit |
 | GPIO | 11 (I2C 2, LED, lamp, 6 buttons, + ADC temp internal) | 30 | |
 
 RAM breakdown: 13 KB is the 20 background-job slots (a whole parsed
-pipeline each), ~6 KB shell and pipe buffers (2 × 1 KB pipe buffers,
+pipeline each), ~12 KB shell and pipe buffers (2 × 4 KB pipe buffers,
 1 KB script, 1 KB capture, parsed pipelines), 1.8 KB FRAM filesystem
-(directory + chain cache, 1 KB append buffer), ~7.7 KB code copied to RAM by the SDK, ~3 KB USB stack, plus
+(directory + chain cache, 1 KB append buffer), ~1.3 KB hexdump/`fs_pread`
+buffers, ~7.7 KB code copied to RAM by the SDK, ~3 KB USB stack, plus
 2 KB heap and 2 KB stack.
+
+**If space ever gets tight: what to cut first** (measured 2026-11-13,
+biggest win first):
+
+| What | Flash | RAM | How |
+|---|---|---|---|
+| Job slots (`MAX_JOBS` 20, `jobs.h`) | 0 | 13 KB | Fewer slots: ~650 bytes each. Keep the `JOB_SLOTS` list in `jobs.cpp` the same length. |
+| Pipe buffers (`STAGE_BUF` 4 KB, `jobs.h`) | 0 | 6 KB | Back to 1024. Everything keeps working; `hexdump` then shows ~192 bytes per screen instead of ~800 (`-- more:` still pages on). |
+| `hexdump` (`prog/hexdump.cpp`) | 1.5 KB | 0.3 KB | Remove it from `CMakeLists.txt` and its `hexdump_register()` call in `picoos.cpp`. Nothing depends on it. |
+| `/dev/mem` (`dev/mem.cpp`) | 0.2 KB | 0 | Same: CMake line + `mem_register()`. |
+| `/dev/fram` (raw, in `dev/fram.cpp`) | 0.1 KB | 0 | Its three small functions + the `fs_register(&dev_fram)` line. |
+| `fs_pread()` (`kernel/fs.cpp`) | 0.2 KB | 1 KB | Better kept: tiny, and other features may want reads at an offset. |
+
+Programs in general are a few hundred bytes of flash each, so leaving
+out small tools saves little; the buffers and tables are where the RAM
+is. A build-time list to switch such things on and off is TODO idea 3.
 
 **A stack finding, fixed.** Measuring with `-fstack-usage` showed the
 deepest call path (shell → `dispatch` → `pipeline_run_once` → a program
@@ -560,15 +836,17 @@ GPIOs are the tightest resource. babywarmer + TFT on this board:
 | 3, 4, 5 | 7-segment shift register |
 | 6 | lamp |
 | 11, 16, 17 | SSR, bargraph PWM, safety relay |
-| 12, 13 | ADS1115 I2C (babywarmer used i2c0 here) |
-| 14, 15 | RTC + FRAM I2C |
+| 12, 13 | ADS1115 I2C (SDA 12, SCL 13), exported on the headers |
+| 14, 15 | RTC + FRAM I2C, local to this board, not on the headers |
 | 20–25 | TFT (LED, RST, SCK, MOSI, DC, CS) |
 | 26 | current-sense ADC |
 | **10, 18, 19, 27** | **free** |
 
-26 of 30 used. The ADS1115 (address `0x48`) can share the board's I2C
-bus with the FRAM (`0x50`) and RTC (`0x51`): that frees GPIO 12 and 13,
-leaving 6 free.
+26 of 30 used. The pin assignments for the buttons, TFT, heater and
+7-segment stay exactly as on babywarmer: cpu_rp2040 becomes the daughter
+board of the next babywarmer PCB, which carries those parts. The
+ADS1115 gets its own bus on GPIO12/13 (exported on the headers); the
+RTC/FRAM bus on GPIO14/15 is local to this board and not exported.
 
 ### Recommendation
 

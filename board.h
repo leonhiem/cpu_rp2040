@@ -12,7 +12,9 @@
 
 #include "hardware/i2c.h"
 
-// On-board I2C bus: RTC + FRAM. 4k7 pull-ups on the board.
+// On-board I2C bus: RTC + FRAM. 4k7 pull-ups on the board. Local to this
+// board, NOT exported on the headers. (The headers export GPIO12 = SDA and
+// GPIO13 = SCL, i2c0, for the carrier board's ADS1115 -- a separate bus.)
 #define BOARD_I2C          i2c1
 #define BOARD_I2C_SDA      14
 #define BOARD_I2C_SCL      15

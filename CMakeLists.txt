@@ -63,6 +63,7 @@ add_executable(picoos
     dev/cputemp.cpp
     dev/reboot.cpp
     dev/fram.cpp
+    dev/mem.cpp
     fs/framfs.cpp
     prog/cat.cpp
     prog/echo.cpp
@@ -79,6 +80,7 @@ add_executable(picoos
     prog/grep.cpp
     prog/headtail.cpp
     prog/tee.cpp
+    prog/hexdump.cpp
     prog/rm.cpp
     prog/mkfs.cpp
     prog/df.cpp

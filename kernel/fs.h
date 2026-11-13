@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include <stdint.h>
+
 #define FS_MAX_DEVICES 64 // 2026-08-16: bumped from 16 after it silently
                           // dropped /dev/setpoint -- registered 17th, past
                           // the old cap, with no warning at all. See fs.cpp.
@@ -35,6 +37,11 @@ typedef struct {
     void (*close)(void);                       // most devices: no-op
     int  (*read)(char *buf, int len);           // returns bytes written to buf, or -1
     int  (*write)(const char *buf, int len);    // returns bytes consumed, or -1
+    // Optional (cpu_rp2040): read starting at a byte offset, for devices
+    // that are a range of bytes rather than one value (/dev/fram,
+    // /dev/mem). Returns bytes read, 0 past the end, -1 on error. Devices
+    // that leave it 0 still work with fs_pread(), see there.
+    int  (*pread)(char *buf, int len, uint32_t offset);
 } device_t;
 
 // Register a device. Call before fs_open() can find it (typically from
@@ -92,6 +99,13 @@ void fs_close(int fd);
 // Both return the number of bytes produced/consumed, or -1 on a bad fd.
 int fs_read(int fd, char *buf, int len);
 int fs_write(int fd, const char *buf, int len);
+
+// Read starting at a byte offset, Unix/Plan 9 pread(): 0 past the end.
+// Devices with their own pread() get the offset; for everything else
+// (plain devices, /fram files: at most 1 KB) the whole value is read
+// and the part from offset on returned. Not an ioctl(): still a read,
+// it just starts somewhere else.
+int fs_pread(int fd, char *buf, int len, uint32_t offset);
 
 // For `ls`: iterate registered devices by index, 0..fs_count()-1.
 // Returns the device's path, or NULL past the end.

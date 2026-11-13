@@ -31,6 +31,7 @@ void uptime_register(void);
 void cputemp_register(void);
 void reboot_register(void);
 void fram_register(void);
+void mem_register(void);
 
 // prog/*.cpp
 void cat_register(void);
@@ -48,6 +49,7 @@ void wc_register(void);
 void grep_register(void);
 void headtail_register(void);
 void tee_register(void);
+void hexdump_register(void);
 void rm_register(void);
 void mkfs_register(void);
 void df_register(void);
@@ -82,7 +84,8 @@ int main()
     uptime_register();
     cputemp_register();
     reboot_register();
-    fram_register();     // mounts /fram
+    fram_register();     // mounts /fram, and /dev/fram (raw)
+    mem_register();
 
     cat_register();
     echo_register();
@@ -99,6 +102,7 @@ int main()
     grep_register();
     headtail_register();
     tee_register();
+    hexdump_register();
     rm_register();
     mkfs_register();
     df_register();
