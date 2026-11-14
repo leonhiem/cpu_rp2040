@@ -232,7 +232,36 @@ controller, 7.5× the pixels, plus a touchscreen. Doable; notes:
   the extra hardware each needs (to check against datasheets and a
   breadboard try before any PCB):
 
-  - **USB keyboard on a second, PIO-driven USB port** (the Pico-PIO-USB
+  - **1. USB keyboard through a converter chip** (preferred). Small parts exist that are
+    a USB host for keyboards and deliver the keys as plain serial (UART),
+    e.g. WCH's CH9350L (to be checked). The RP2040 then just reads a UART
+    at 3.3 V: no USB stack, no core taken. Still needs the 5 V VBUS
+    supply with current limiting and the ESD protection at the USB
+    connector, as above. Costs 1–2 GPIOs (UART RX, maybe TX). Probably
+    the least software and the least risk.
+  - **2. Anything that sends keys over a UART.** Same picoos side as the
+    converter chip: a 3.3 V serial line into an RP2040 UART, read by a
+    small driver behind `/dev/cons`. The source could be a ready-made
+    keyboard-to-serial module, or another device or terminal on a serial
+    cable. A TTL UART on a connector still wants ESD protection; a real
+    RS-232 cable (±12 V) needs a transceiver (MAX3232 type), never a
+    direct connection to the pins.
+  - **3. PS/2 keyboard.** The simplest protocol: two lines, clock and data,
+    11-bit frames clocked by the keyboard, easy to read with PIO or a
+    GPIO interrupt, almost no CPU.
+    - *Needs real level shifting*: the lines are open-collector, pulled
+      up to 5 V inside the keyboard. Two bidirectional shifters, the
+      same MOSFET circuit as an I2C level shifter (e.g. BSS138 with
+      pull-ups on both sides), or the RP2040 pins see 5 V (the README's
+      +5 V lesson).
+    - *5 V supply* for the keyboard, current-limited, and *ESD
+      protection* (TVS) on clock and data at the connector.
+    - Downside: it's old-fashioned (IBM, 1987; USB replaced it in the
+      2000s). Still found on industrial and some gaming keyboards, but
+      most keyboards on sale are USB-only, and a USB-to-PS/2 adapter only
+      works with keyboards that still speak both protocols.
+
+  - **4. (last) USB keyboard on a second, PIO-driven USB port** (the Pico-PIO-USB
     library; the RP2040's own USB port stays the serial console and
     power input; it can be a USB host too, but then the console is gone).
     - *Data lines need no level shifting*: USB full/low speed signals
@@ -253,30 +282,12 @@ controller, 7.5× the pixels, plus a touchscreen. Doable; notes:
       of 12 MHz (e.g. 120 MHz instead of the SDK's 125). Possible, but
       it changes the plan for core 1.
     - Works with any USB keyboard, which is the big plus.
-  - **USB keyboard through a converter chip.** Small parts exist that are
-    a USB host for keyboards and deliver the keys as plain serial (UART),
-    e.g. WCH's CH9350L (to be checked). The RP2040 then just reads a UART
-    at 3.3 V: no USB stack, no core taken. Still needs the 5 V VBUS
-    supply with current limiting and the ESD protection at the USB
-    connector, as above. Costs 1–2 GPIOs (UART RX, maybe TX). Probably
-    the least software and the least risk.
-  - **PS/2 keyboard.** The simplest protocol: two lines, clock and data,
-    11-bit frames clocked by the keyboard, easy to read with PIO or a
-    GPIO interrupt, almost no CPU.
-    - *Needs real level shifting*: the lines are open-collector, pulled
-      up to 5 V inside the keyboard. Two bidirectional shifters, the
-      same MOSFET circuit as an I2C level shifter (e.g. BSS138 with
-      pull-ups on both sides), or the RP2040 pins see 5 V (the README's
-      +5 V lesson).
-    - *5 V supply* for the keyboard, current-limited, and *ESD
-      protection* (TVS) on clock and data at the connector.
-    - Downside: PS/2 keyboards are getting rare; a USB-to-PS/2 adapter
-      only works with keyboards that still speak both protocols.
+    - **Ranked last (Leon, 2026-11-14):** spending a core and much of
+      the RP2040's processing power on USB work is not wanted.
+  **Order of preference (2026-11-14):** 1. converter chip, 2. UART,
+  3. PS/2, 4. PIO-USB. Try the converter chip on the breadboard first,
+  before the carrier PCB is designed.
 
-  First thought: the converter chip looks like the best balance (any USB
-  keyboard, simple 3.3 V UART, no CPU cost); PS/2 is the simplest to
-  understand on a breadboard if a keyboard is at hand. Worth trying one
-  of them on the breadboard before the carrier PCB is designed.
 - **How to start:** the same path as the ST7735: a standalone
   experimental repo first, on a breadboard (driver, colors, speed,
   touch and its calibration, the XPT2046 bus choice above), then a
