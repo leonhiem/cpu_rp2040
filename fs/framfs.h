@@ -12,7 +12,9 @@
  *                    first     uint16, first block, or END for an empty file
  *   blocks 9-12    chain table: one uint16 per block
  *                    FREE (0) / next block / END (0xffff)
- *   blocks 13-127  data, 115 blocks = 7360 bytes
+ *   blocks 13-123  data, 111 blocks = 7104 bytes
+ *   blocks 124-127 NOT the filesystem's: the system area (board.h,
+ *                  fs/hours.h), which mkfs never touches
  *
  * Chain entries are 16-bit so the same format scales to a bigger FRAM
  * (FRAM_SIZE in board.h): mkfs works out the layout from it.

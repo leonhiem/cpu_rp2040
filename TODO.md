@@ -27,6 +27,43 @@ can live in files instead of in the firmware.
 - No directories yet, so naming carries the grouping: `pid.kp`,
   `pid.ti`, ... (11 characters max).
 
+**Plan (2026-11-15): a program `remember <device> <file>`** (name: Leon's
+choice), run as a background job. Not built yet.
+
+- **What it does:** every tick (150 ms) it reads the device and the file;
+  if they differ, it writes the device's value to the file. Otherwise
+  nothing. One value per file, plain text, as the device speaks it.
+- **Two lines per setting in `/fram/boot`, in this order:**
+  ```
+  cat /fram/setpoint > /dev/setpoint       # restore what was saved
+  remember /dev/setpoint /fram/setpoint &  # from now on, keep saving changes
+  ```
+  Restore **first**: started the other way round, `remember` would save
+  the device's default over the stored value before it's restored.
+  (Only the very first time, when `/fram/setpoint` doesn't exist yet,
+  the restore line fails harmlessly and `remember` creates the file.)
+- **Why a program and not inside `/dev/setpoint`:** saving would then be a
+  hidden fact of one driver. As a job it's visible wiring, like
+  `adjust`/`follow`, and works for every device without new code:
+  `/dev/percent`, `/dev/pid/kp`, `/dev/heaterauto`, `/dev/lamp`, ...
+- **It saves every change, whatever made it:** the UP/DOWN buttons
+  (through `adjust`), `echo 36.5 > /dev/setpoint`, a script.
+- **Stateless on purpose:** it compares with the file, not with a value
+  it remembers, so any number of `remember` jobs never share state (the
+  trap `hyst` has). Cost: a few bytes read over I2C per job per tick.
+- **Safe and free:** FRAM doesn't wear, so writing on every change is
+  fine; a power cut mid-write leaves the old or the new value (the
+  filesystem's write order), never half of one.
+- **Settings are files, so `mkfs` erases them:** that works as a factory
+  reset. Different from the hour counters on purpose: settings may be
+  reset, operating hours may not.
+- **Testable on cpu_rp2040 now**, before babywarmer: let the lamp
+  remember whether it was on across a power cycle:
+  ```
+  cat /fram/lamp > /dev/lamp
+  remember /dev/lamp /fram/lamp &
+  ```
+
 ### 1b. cron
 
 A crontab on the FRAM, driven by the RTC: run commands at set times.
@@ -104,7 +141,15 @@ all of them.
   tight"): job slots 13 KB RAM, pipe buffers 6 KB RAM, hexdump 1.5 KB
   flash, /dev/mem + /dev/fram + fs_pread under 1 KB flash together.
 
-### 4. Hour counter (power-fail safe)
+### 4. Hour counter (power-fail safe) — built 2026-11-15
+
+Built as `/dev/hours` (counter 0, power-on hours) in the FRAM's system
+area, see the README's "Hour counter". Decided 2026-11-15: `mkfs` never
+erases it; system area 256 bytes = 7 counters; first version counts
+power-on hours only (heater hours etc. later, in the spare slots).
+Original notes:
+
+#### (original idea)
 
 An operating-hours counter, like a car's odometer: babywarmer needs one
 (service intervals, warranty), and so will other systems. It must never

@@ -24,6 +24,13 @@
 #define FRAM_I2C_ADDR      0x50  // FM24CL64B, A2..A0 = 0
 #define FRAM_SIZE          8192  // 64 Kbit; WP hardwired to GND
 
+// FRAM layout (decided 2026-11-15, see README "Files on the FRAM"):
+//   0 .. SYSAREA_ADDR-1        filesystem (fs/framfs.h), wiped by mkfs
+//   SYSAREA_ADDR .. FRAM_SIZE  system area (fs/hours.h): hour counters,
+//                              NEVER touched by mkfs
+#define SYSAREA_SIZE       256
+#define SYSAREA_ADDR       (FRAM_SIZE - SYSAREA_SIZE)
+
 // PCF8563 notes (details in README.md, "Hardware notes"):
 // - INT and CLKOUT: pads only, not wired to a GPIO yet.
 // - CLKOUT defaults ON (32.768 kHz): turn it off at init (reg 0x0D = 0x00),

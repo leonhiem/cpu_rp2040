@@ -118,8 +118,10 @@ programs as picoos; the babywarmer-specific parts (heater, NTC sensors,
 own devices and more small Unix-style programs. Small commands, many of
 them, each doing one thing.
 
-Connect a USB serial terminal; type `help` for the builtins and grammar,
-`ls` for every device and program.
+Connect a USB serial terminal; type `help` for the builtins, the grammar
+and the commands most often looked up (`echo bootsel > /dev/reboot` to
+reprogram, setting the clock, `mkfs`, ...), `ls` for every device and
+program.
 
 ```
 stage [| stage ...] [< path] [> path | >> path] [&]
@@ -146,6 +148,9 @@ the LAMP button to the lamp output, as on babywarmer
 | `/fram/<name>` | read/write | Files on the FRAM, see [Files on the FRAM](#files-on-the-fram-fram). |
 | `/dev/fram` | read | The raw FRAM chip, all 8 KB, filesystem structures included. Read-only. Use `hexdump`. |
 | `/dev/mem` | read | RP2040 memory by address (offset = address): boot ROM `0x0`, flash `0x10000000`, RAM `0x20000000`. Anything else is refused (no crash). Read-only. Use `hexdump`. |
+| `/dev/hours` | read | Power-on hours, `hours:minutes` (e.g. `1234:30`), or `corrupt`/`error`. See [Hour counter](#hour-counter-devhours). |
+| `/dev/hours/status` | read | `ok`, `new` (started at 0 this boot), `corrupt` or `error`. |
+| `/dev/hours/ctl` | write | `set H:MM`: deliberately set or reset the counter. |
 
 ### Programs (`bin/...`)
 
@@ -287,7 +292,9 @@ df
 - **Flat names, 1–11 characters**, no directories, no spaces or `/`.
 - **At most 32 files, each at most 1 KB** (a simple, safe append path that
   rewrites the whole file; pipes themselves carry 4 KB).
-  7360 bytes of space, in 64-byte blocks: a 3-byte file uses 64.
+  7104 bytes of space, in 64-byte blocks: a 3-byte file uses 64.
+  (7360 until 2026-11-15, when the last 256 bytes became the
+  [system area](#hour-counter-devhours) for the hour counters.)
 - **Never formatted automatically.** A blank FRAM at boot just says
   `fram: no filesystem, run: mkfs /fram`, so a glitch can't wipe files.
 - **Scripts are files.** `script <name>` saves to `/fram/<name>`;
@@ -368,10 +375,20 @@ The log stops growing at 1 KB: from then on every pass prints
 
 ### How the filesystem works
 
-`fs/framfs.h`: the FRAM is split into 128 blocks of 64
-bytes. Block 0 is a superblock (`pfs1`), then a 32-entry directory (name,
-size, first block), then a chain table saying for every block which
-block comes next in its file, then 115 data blocks. A file is a chain of
+The FRAM layout (decided 2026-11-15, meant to stay):
+
+```
+0x0000  block 0         superblock: "pfs1", version 2, block size, 124 blocks, 32 entries
+0x0040  blocks 1-8      directory: 32 entries x 16 bytes (name, size, first block)
+0x0240  blocks 9-12     chain table: 2 bytes per block
+0x0340  blocks 13-123   file data: 111 blocks = 7104 bytes
+0x1f00  blocks 124-127  system area: hour counters (fs/hours.h), NEVER touched by mkfs
+0x2000  end
+```
+
+`fs/framfs.h` owns blocks 0–123: a superblock (`pfs1`), a 32-entry
+directory (name, size, first block), a chain table saying for every
+block which block comes next in its file, then 111 data blocks. A file is a chain of
 blocks, not one contiguous run, so a file can grow without moving any
 other file (the FAT idea). Writes go in an order that survives a power
 cut: new data blocks, then their chain, then the directory entry, then
@@ -379,7 +396,8 @@ the old blocks are freed. A cut can leak a few blocks (`mkfs` reclaims
 them) but never leaves a file pointing at garbage: tested on the PC by
 cutting power at every single write of an overwrite. Chain entries are
 16-bit, so a bigger FRAM later only needs `FRAM_SIZE` changed in
-`board.h` and a `mkfs`.
+`board.h` and a `mkfs`: the filesystem grows, and the system area stays
+the last 256 bytes of the chip.
 
 The kernel side is a **mount** (`kernel/fs.h`): `fs_open("/fram/a.txt")`
 finds the mount for `/fram` and hands `a.txt` to the filesystem. Programs
@@ -462,6 +480,10 @@ created and removed.
 00002000
 ```
 
+(Made 2026-11-13, with layout version 1. Since 2026-11-15 the superblock
+reads `pfs1 02 00 40 00 7c 00 20`: version 2, 124 blocks, the last 4
+being the system area. Directory, chain table and data work the same.)
+
 Reading it (numbers are little-endian: `23 00` is 0x23 = 35):
 
 - **`0x000` superblock (block 0):** `pfs1`, version `01`, block size
@@ -491,10 +513,73 @@ Reading it (numbers are little-endian: `23 00` is 0x23 = 35):
   writes only the superblock, directory and chain table, never the data
   area, and a file only overwrites the bytes it needs.
 
+### Hour counter (`/dev/hours`)
+
+An operating-hours counter like a car's odometer: it only goes up, and
+it survives power cuts at any moment, firmware updates, and `mkfs /fram`.
+
+```
+% cat /dev/hours
+1234:30
+% cat /dev/hours/status
+ok
+% cat /dev/hours | thresh 500 > /dev/led &     # LED on after 500 hours: a service interval
+% echo set 0:00 > /dev/hours/ctl               # factory reset, deliberate
+% echo set 1234:30 > /dev/hours/ctl            # a replacement board takes over the old count
+```
+
+- **Where it lives.** In the **system area**, the last 256 bytes of the
+  FRAM (`0x1f00`–`0x1fff`), outside the filesystem. `mkfs` never touches
+  it (decided 2026-11-15: formatting the storage must not reset the
+  operating hours). Room for 7 counters; counter 0 is power-on hours,
+  the others are reserved (e.g. heater hours on babywarmer).
+- **How it counts.** With the RP2040's own timer, never the RTC: setting
+  the clock or a flat RTC backup can't change it. A kernel task (not a
+  job: `kill` can't stop it) saves once a minute. A power cut loses at
+  most the minute in progress.
+- **Why it can't go corrupt.**
+  - Every counter is stored **twice** (copies A and B), each with a
+    sequence number and a CRC32. Saves alternate A, B, A, ... At power-up
+    the valid copy with the highest sequence number wins. A power cut
+    can only damage the copy being written; the other one is intact and
+    at most one minute older. Tested on the PC with *torn* writes: only
+    1, 2, ... 15 of a record's 16 bytes reaching the chip. Every case
+    came back as the old or the new value.
+  - **Never backwards.** A save lower than the current value is refused.
+    Only `/dev/hours/ctl` can lower it, on purpose.
+  - **No wear.** FRAM takes ~10^14 writes; EEPROM or flash counters (often
+    rated 100k–1M writes) wear out when saved every minute. That's the
+    usual reason hour counters die.
+  - **Both copies bad can't come from one power cut.** If it ever
+    happens (a chip fault, a bug), the counter reads `corrupt`, stops
+    counting, and **stays** corrupt across reboots until set by hand.
+    It's never silently restarted at 0: that would hide what happened.
+  - **A lost header doesn't reset anything.** The area only counts as new
+    (all counters at 0) if neither the header nor any counter record is
+    valid. A damaged header alone is rewritten; the counters are kept.
+  - **An unreadable FRAM at boot is `error`, not "new".** Nothing is
+    written that boot, so a bus glitch can never reset the counters.
+  - **Even `bringup` can't take both copies.** Its FRAM test rewrites the
+    chip in 32-byte chunks and restores each; a counter's copy A and B
+    always fall in different chunks, so a power cut in the middle of the
+    test damages at most one of them.
+- **First boot with the counter**: `hours: new counter, starting at 0:00`.
+
+Layout of the system area (`fs/hours.h`):
+
+```
++0x00  header: "sys1", version 1, 7 counters, ..., crc32      16 bytes
++0x10  counter 0, copy A: seq, minutes, reserved, crc32         16 bytes
++0x20  counter 0, copy B                                        16 bytes
++0x30  counter 1, copy A ... up to counter 6, copy B at +0xe0
+```
+
 ### What `rm` does, step by step
 
 A PC simulation of the FRAM (same code as on the board), starting from a
-fresh `mkfs` on an all-zero chip. A short file `a` and a two-block file
+fresh `mkfs` on an all-zero chip. (Made 2026-11-13, with the first
+layout: `df` said 7360 total then; it's 7104 now. Everything else below
+is unchanged.) A short file `a` and a two-block file
 `fox`, built with four `>>` appends:
 
 ```
@@ -667,9 +752,10 @@ Then: add the file to `CMakeLists.txt`, declare and call its
 of a filesystem. `dev/fram.cpp` is the example: twelve lines that put
 `fs/framfs.h` at `/fram`.
 
-Capacities (2026-11-13): 64 devices (`FS_MAX_DEVICES`, 16 used), 48
+Capacities (2026-11-15): 64 devices (`FS_MAX_DEVICES`, 19 used), 48
 programs (`PROG_MAX`, 21 used), 4 mounts (1 used), 4 files open at once,
-20 background jobs, 32 tasks (21 used: the shell + the 20 job slots).
+20 background jobs, 32 tasks (22 used: the shell, the hour counter, the
+20 job slots).
 Every table says so loudly on the console when it's full, rather than
 dropping an entry silently (a lesson picoos learned three times).
 
@@ -731,6 +817,24 @@ session with `>>`, scripts and `/fram/boot`). On the board:
 | New: `#` comments (`date # hi` runs `date`) | ok: typed and inside `/fram/boot` |
 | Stack fix (pipe buffers static): no visible change expected, everything above should behave the same | ok: nothing changed |
 | Shell fix found on the PC: lines typed or pasted after `run`/`sleep`/`watch` ran immediately, mixed into the script (inherited from picoos). Now they wait until it's done. Paste e.g. `sleep 2000` + `echo after` in one go | ok: `after` came after the sleep |
+
+**2026-11-15, hour counter and the new FRAM layout** (`picoos.uf2`):
+tested on the PC (`fs/hours` against a simulated FRAM: counting,
+persistence, never backwards, power cut before a save (200×), torn
+records (1–15 of 16 bytes), lost header, both copies destroyed, set and
+reset, a cut during set and during the very first init, an unreadable
+FRAM at boot, `mkfs` and a full filesystem leaving the system area
+byte-identical, a version-1 filesystem refusing to mount). On the board:
+
+| Test | Result |
+|---|---|
+| First boot: `fram: no filesystem` (version 1 no longer mounts) and `hours: new counter, starting at 0:00` | ok: both messages on the first boot after flashing (22:55:30); `0:14` about 14 minutes later, after a reboot in between |
+| `mkfs /fram`: 7104 bytes free; `/fram/boot` recreated with `script boot` | `mkfs` ok: `/fram: formatted, 7104 bytes free`; `ls /fram` empty. `/fram/boot` not recreated yet (the built-in boot ran) |
+| `cat /dev/hours`, `/dev/hours/status` (`new`, after a reboot `ok`); the count goes up each minute | `cat /dev/hours` = `0:14`: counting since the first boot of this firmware, across `echo now > /dev/reboot`. `/dev/hours/status` = `ok` after that reboot (it was `new` on the first boot) |
+| Power off for a while, on again: the count continues where it was (minus the minute in progress) | ok: `0:19` before power-off (23:16), `Clean boot` at 23:21, still `0:19`: the 5 minutes off don't count (power-on hours), nothing lost |
+| `mkfs /fram` again: `/dev/hours` unchanged | ok: `mkfs` ran after the counter had started, and it still read `0:14` right after |
+| `echo set 10:00 > /dev/hours/ctl`, then `set 0:00` | ok: `10:00`, then `0:00`, both at once; counting goes on from the set value (`0:05` five minutes later). `echo 5 > /dev/hours/ctl` refused (`write failed`), counter unchanged |
+| `hexdump -s 0x1f00 /dev/fram`: `sys1` header, copies A/B alternating | ok at `0:19`: header `sys1 01 07`; counter 0 copy A seq 19 / 18 minutes, copy B seq 20 / 19 minutes (the newest, = `0:19`); counter 1 at seq 1 / 0. seq = minutes + 1: one save per minute since the init, none missed or doubled, across a reboot |
 
 **2026-11-13, hexdump, `/dev/fram`, `/dev/mem`** (`picoos.uf2`): tested
 on the PC (all of `hexdump` against a simulated FRAM, incl. `*`

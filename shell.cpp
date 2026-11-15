@@ -177,19 +177,31 @@ static absolute_time_t watch_next;
 
 static void print_help(void)
 {
-    printf("grammar:  stage [| stage ...] [< path] [> path] [&]\n"
+    // One screen, under 80 columns. Builtins first (they're not in `ls`),
+    // then the commands people look up most: how to reprogram the board
+    // first of all.
+    printf("grammar:  stage [| stage ...] [< path] [> path | >> path] [&]   # comment\n"
            "          stage := program [arg...]\n"
            "\n"
-           "ls                   list devices (/dev/...) and programs (bin/...)\n"
-           "help                 this text\n"
-           "jobs                 list background jobs\n"
-           "kill %%<id>           stop a background job\n"
-           "sleep <ms>           pause the shell, everything else keeps running\n"
-           "script <name>        record lines into /fram/<name>, end with '.'\n"
-           "run <name>           replay a script (/fram/<name>, else built-in)\n"
-           "loop <name>          replay a script forever, Ctrl-C to stop\n"
-           "scripts              list built-in scripts (files: ls /fram)\n"
-           "watch <ms> <stage..> repeat a pipeline every <ms>, Ctrl-C to stop\n");
+           "builtins (everything else is a program or a file: ls, ls -l /fram):\n"
+           "  help                 this text\n"
+           "  jobs                 list background jobs\n"
+           "  kill %%<id>           stop a background job\n"
+           "  sleep <ms>           pause the shell, everything else keeps running\n"
+           "  script <name>        record lines into /fram/<name>, end with '.'\n"
+           "  run <name>           replay a script (/fram/<name>, else built-in)\n"
+           "  loop <name>          replay a script forever, Ctrl-C to stop\n"
+           "  scripts              list built-in scripts (files: ls /fram)\n"
+           "  watch <ms> <stage..> repeat a pipeline every <ms>, Ctrl-C to stop\n"
+           "\n"
+           "often needed:\n"
+           "  echo bootsel > /dev/reboot           USB bootloader: copy a new .uf2 now\n"
+           "  echo now > /dev/reboot               plain reboot\n"
+           "  echo YYYY-MM-DD HH:MM:SS > /dev/rtc  set the clock (date shows it)\n"
+           "  mkfs /fram                           format: files gone, hours kept\n"
+           "  df, ls -l /fram, rm /fram/<f>        space, files, remove\n"
+           "  cat /dev/hours                       power-on hours (set: /dev/hours/ctl)\n"
+           "  hexdump [-s off] [-n len] <path>     raw bytes, e.g. /dev/fram, /dev/mem\n");
 }
 
 static void print_prompt(void)
@@ -496,7 +508,7 @@ void task_shell(void)
     if (!banner_shown) {
         printf("\npicoos on cpu_rp2040\n");
         printf("  ls            list /dev and bin/\n");
-        printf("  help          builtins and grammar\n");
+        printf("  help          builtins, grammar, often needed (reboot, bootsel, ...)\n");
         banner_shown = true;
 
         // Auto-run 'boot': /fram/boot if it exists, else the built-in one.

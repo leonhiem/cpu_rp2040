@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 #define BLOCK        64
-#define NBLOCKS      (FRAM_SIZE / BLOCK)
+#define NBLOCKS      (SYSAREA_ADDR / BLOCK)   // stops short of the system area (board.h)
 #define NDIR         32
 #define DIR_START    1
 #define DIR_BLOCKS   (NDIR * 16 / BLOCK)
@@ -16,7 +16,9 @@
 #define FREE 0x0000      // block 0 is the superblock, never part of a chain
 #define END  0xffff
 
-#define VERSION 1
+#define VERSION 2   // 2: ends before the system area (2026-11-15). A version-1
+                    // filesystem used the last 4 blocks for data, so it must
+                    // not be mounted any more: mkfs.
 
 struct dirent {
     char     name[FRAMFS_NAME_MAX + 1];

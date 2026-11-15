@@ -64,7 +64,9 @@ add_executable(picoos
     dev/reboot.cpp
     dev/fram.cpp
     dev/mem.cpp
+    dev/hours.cpp
     fs/framfs.cpp
+    fs/hours.cpp
     prog/cat.cpp
     prog/echo.cpp
     prog/label.cpp
