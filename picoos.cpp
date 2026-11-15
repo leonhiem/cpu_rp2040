@@ -33,6 +33,8 @@ void reboot_register(void);
 void fram_register(void);
 void mem_register(void);
 void hours_register(void);
+void cron_register(void);
+void cons_register(void);
 
 // prog/*.cpp
 void cat_register(void);
@@ -89,6 +91,8 @@ int main()
     fram_register();     // mounts /fram, and /dev/fram (raw)
     mem_register();
     hours_register();    // power-on hours, from the FRAM's system area
+    cron_register();     // runs /fram/crontab lines, on the RTC's minutes
+    cons_register();
 
     cat_register();
     echo_register();

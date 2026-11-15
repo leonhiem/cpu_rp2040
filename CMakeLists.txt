@@ -65,6 +65,8 @@ add_executable(picoos
     dev/fram.cpp
     dev/mem.cpp
     dev/hours.cpp
+    dev/cron.cpp
+    dev/cons.cpp
     fs/framfs.cpp
     fs/hours.cpp
     prog/cat.cpp

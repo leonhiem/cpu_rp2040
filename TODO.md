@@ -65,7 +65,14 @@ power cycle". The plan as it was:
   remember /dev/lamp /fram/lamp &
   ```
 
-### 1b. cron
+### 1b. cron — built 2026-11-15
+
+Built as planned below: a kernel task + `/dev/cron` (on/off), lines from
+`/fram/crontab`, plus `/dev/cons` for text on the terminal. See the
+README's "cron". Decided: pipelines only (no builtins), nothing on an
+untrusted clock, no catching up of skipped minutes. Original notes:
+
+#### (original idea)
 
 A crontab on the FRAM, driven by the RTC: run commands at set times.
 
@@ -363,6 +370,22 @@ controller, 7.5× the pixels, plus a touchscreen. Doable; notes:
   allow more for less.
 - **`shred` / wiping `rm`**: `rm` frees blocks but leaves the bytes (see
   the README's "What `rm` does").
+- **Adding to or editing a file with `>`, `|`, `&` in it** (2026-11-16):
+  `script <name>` replaces the whole file (like `>`), and `echo ... >>`
+  can't write those characters until the shell has quotes. So there's no
+  way to add one line to `/fram/crontab` or `/fram/boot`, or change one.
+  - Small: `script -a <name>`, append the captured lines (like `>>` for `>`).
+  - Bigger, the classic Unix answer: `ed`, the line editor
+    (`ed /fram/crontab`, then `3d`, `2a`, `p`, `w`). Fits with the TFT
+    console and a keyboard.
+- **Prompt redraw after `/dev/cons` output?** (2026-11-16) Text written to
+  `/dev/cons` (a cron `tick`) lands right after the `% ` prompt, and the
+  next typed line appears without a prompt: nothing is lost, it only looks
+  mixed. bash (readline) and zsh redraw: fresh line, the message, then
+  the prompt and the half-typed line again. Plain Unix terminals and Plan
+  9's `rc` don't, and picoos doesn't either, for now (decided: leave the
+  code as is). Decide together with the TFT console (wishlist 5), where
+  the screen handling gets written anyway.
 - **Per-job poll rate**: all background jobs run every 150 ms.
 - **`hyst` shares one state** between all its users (from picoos).
 - **`fsck /fram`**: reclaim blocks leaked by a power cut mid-write

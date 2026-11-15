@@ -201,6 +201,7 @@ static void print_help(void)
            "  mkfs /fram                           format: files gone, hours kept\n"
            "  df, ls -l /fram, rm /fram/<f>        space, files, remove\n"
            "  cat /dev/hours                       power-on hours (set: /dev/hours/ctl)\n"
+           "  script crontab                       timed jobs (on/off: /dev/cron)\n"
            "  hexdump [-s off] [-n len] <path>     raw bytes, e.g. /dev/fram, /dev/mem\n");
 }
 
@@ -617,4 +618,32 @@ void task_shell(void)
             putchar(c);
         }
     }
+}
+
+// One line for cron (dev/cron.cpp): the same tokenizing and parsing as a
+// typed line, but pipelines only -- builtins hold or change the shell
+// itself (sleep, run, loop, watch, script, ...), which a timer has no
+// business doing behind the user's back. Output is discarded unless
+// redirected, as with Unix cron; a trailing `&` starts a background job.
+// Called from cron's own task, never from inside a pipeline, so the
+// static pipe buffers in jobs.cpp can't be clobbered by nesting.
+// Returns false if the line was refused (empty, builtin, bad grammar).
+bool shell_run_cron_line(const char *text)
+{
+    static const char *builtins[] = { "help", "jobs", "kill", "sleep", "script",
+                                      "scripts", "run", "loop", "watch" };
+    char line[LINE_MAX];
+    snprintf(line, sizeof(line), "%s", text);
+    char *tok[MAX_TOKENS];
+    int ntok = tokenize(line, tok);
+    if (ntok == 0) return false;
+    for (const char *b : builtins)
+        if (strcmp(tok[0], b) == 0) return false;
+
+    static pipeline_t p;
+    bool background;
+    if (!parse_pipeline(tok, ntok, &p, &background) || p.stages[0].argc == 0) return false;
+    if (background) return job_start(&p) > 0;
+    pipeline_run_once(&p, false);
+    return true;
 }

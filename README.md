@@ -151,6 +151,8 @@ the LAMP button to the lamp output, as on babywarmer
 | `/dev/hours` | read | Power-on hours, `hours:minutes` (e.g. `1234:30`), or `corrupt`/`error`. See [Hour counter](#hour-counter-devhours). |
 | `/dev/hours/status` | read | `ok`, `new` (started at 0 this boot), `corrupt` or `error`. |
 | `/dev/hours/ctl` | write | `set H:MM`: deliberately set or reset the counter. |
+| `/dev/cron` | read/write | `on`/`off`: whether `/fram/crontab` lines run. `on` at power-up. See [cron](#cron-framcrontab). |
+| `/dev/cons` | write | The console as a file (Plan 9's name): `echo hello > /dev/cons` prints on the terminal. |
 
 ### Programs (`bin/...`)
 
@@ -367,6 +369,57 @@ remember /dev/setpoint /fram/setpoint &
   second: pointless.
 - Each `remember` takes one of the 20 job slots and reads a few bytes from
   the FRAM every 150 ms.
+
+### cron (`/fram/crontab`)
+
+Run commands at set times, driven by the RTC. `/fram/crontab` holds one
+job per line: the classic five time fields, then a command, a pipeline
+as typed at the prompt. Write it with `script crontab`:
+
+```
+script crontab
+> # min   hour  day  month  weekday   command
+> *       *     *    *      *         echo tick > /dev/cons
+> */2     *     *    *      *         echo on > /dev/led
+> 1-59/2  *     *    *      *         echo off > /dev/led
+> 0       8     *    *      1-5       date >> /fram/log
+> 0       22    *    *      *         echo off > /dev/lamp
+> .
+```
+
+Every minute a `tick` on the terminal, the LED on in even minutes and
+off in odd ones, a log line at 08:00 on weekdays, the lamp off at 22:00.
+
+- **Fields:** minute 0–59, hour 0–23, day 1–31, month 1–12, weekday 0–7
+  (0 and 7 are both Sunday). Each is `*`, a number, a range `1-5`, a step
+  (`*/15`, `1-59/2`, `5/20` = 5, 25, 45), or a comma list (`0,30`).
+- **Day and weekday:** if both are given (not `*`), a line runs when
+  *either* matches, as in Unix cron: `0 12 15 * 3` runs at noon on the
+  15th *and* on every Wednesday.
+- **Output is discarded unless redirected**, as in Unix cron. To see
+  something on the terminal, send it to `/dev/cons`.
+- **A line ending in `&` starts a background job**: e.g.
+  `0 8 * * * cat /dev/cputemp | hyst 30 2 > /dev/lamp &` starts a
+  thermostat at 08:00. Give such lines a *fixed* time: on `* * * * *` it
+  would start another job every minute, until all 20 slots are full.
+- **Pipelines only, no builtins** (`sleep`, `run`, `loop`, `watch`, ...):
+  a timer shouldn't take over the shell. Such a line is refused with a
+  message when it comes up.
+- **Edits work from the next minute**: the crontab is read again every
+  minute, no restart. Bad lines are reported once
+  (`cron: /fram/crontab line 3: bad, ignored`), when the crontab is first
+  read or changed, and skipped.
+- **`echo off > /dev/cron` stops it**, `echo on > /dev/cron` starts it
+  again; `cat /dev/cron` tells which. On at power-up.
+- **Only on a trusted clock:** nothing runs while `/dev/rtc/vl` is `on`
+  (the RTC lost its time), or if the RTC can't be read.
+- **On the minute, not caught up:** a job runs at the start of its
+  minute. The minute in which the board starts is skipped, and minutes
+  the clock jumps over (setting the time, a power cut) aren't run later.
+- How it works: a kernel task (no job slot), once a second reads the RTC;
+  on each new minute it reads `/fram/crontab` and runs the matching lines
+  (`dev/cron.cpp`). Not a background job on purpose: a job is a program
+  inside the pipeline machinery, and pipelines can't start pipelines.
 
 ### Scripts
 
@@ -816,10 +869,10 @@ Then: add the file to `CMakeLists.txt`, declare and call its
 of a filesystem. `dev/fram.cpp` is the example: twelve lines that put
 `fs/framfs.h` at `/fram`.
 
-Capacities (2026-11-15): 64 devices (`FS_MAX_DEVICES`, 19 used), 48
+Capacities (2026-11-15): 64 devices (`FS_MAX_DEVICES`, 21 used), 48
 programs (`PROG_MAX`, 22 used), 4 mounts (1 used), 4 files open at once,
-20 background jobs, 32 tasks (22 used: the shell, the hour counter, the
-20 job slots).
+20 background jobs, 32 tasks (23 used: the shell, the hour counter,
+cron, the 20 job slots).
 Every table says so loudly on the console when it's full, rather than
 dropping an entry silently (a lesson picoos learned three times).
 
@@ -881,6 +934,21 @@ session with `>>`, scripts and `/fram/boot`). On the board:
 | New: `#` comments (`date # hi` runs `date`) | ok: typed and inside `/fram/boot` |
 | Stack fix (pipe buffers static): no visible change expected, everything above should behave the same | ok: nothing changed |
 | Shell fix found on the PC: lines typed or pasted after `run`/`sleep`/`watch` ran immediately, mixed into the script (inherited from picoos). Now they wait until it's done. Paste e.g. `sleep 2000` + `echo after` in one go | ok: `after` came after the sleep |
+
+**2026-11-15, cron and `/dev/cons`** (`picoos.uf2`): tested on the PC
+with a simulated clock (minute by minute: start-up minute skipped,
+`*`, `*/2`, `1-59/2`, `1-5`, Sunday as 0 and 7, the day-or-weekday
+rule, lists, `5/20` steps, `&` starting a job, a builtin refused, three
+bad lines reported once, nothing on an untrusted clock / with
+`/dev/cron` off / with an unreadable RTC). On the board:
+
+| Test | Result |
+|---|---|
+| `echo hello > /dev/cons` | ok: `hello` |
+| The example crontab: `tick` every minute, the LED on/off on even/odd minutes | `tick`: ok, every minute 00:02–00:06, from a crontab written with `script crontab` (191 bytes, comments included). A tick that arrives while the prompt is shown lands after the `%`, and the next typed line appears without a prompt (nothing lost, just confusing). LED: pending |
+| `echo off > /dev/cron`: ticks stop; `on`: they come back | ok: off before 00:10:50, no ticks at 00:11 and 00:12 (not caught up later); on at ~00:12:10, next tick 00:13 |
+| A bad line is reported once | ok: `61 * * * * echo x` → `cron: /fram/crontab line 1: bad, ignored` once, at the next minute (00:15), not again. Noted: `script crontab` replaces the whole file (as designed), so the tick lines were gone |
+| Power off/on: cron runs again from the next minute, from the stored crontab | ok (with `echo now > /dev/reboot`): boot at 00:19:22, that minute skipped, first `tick` at 00:20 from `/fram/crontab`; `/dev/cron` `on` again |
 
 **2026-11-15, `remember`** (`picoos.uf2`): tested on the PC (a simulated
 lamp and button: first save creates the file, `unchanged` after that, a
