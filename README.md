@@ -178,6 +178,7 @@ the LAMP button to the lamp output, as on babywarmer
 | `df` | `df` | Total, used and free space on every mount. |
 | `mkfs` | `mkfs /fram` | Format: every file on it is gone. Never happens on its own. |
 | `hexdump` | `hexdump [-s off] [-n len] [path]` | Hex + ASCII, `hexdump -C` layout, of a path or piped input. Repeated lines become `*`. See [hexdump](#hexdump). |
+| `remember` | `remember <device> <file>` | Keep a file equal to a device: write the device's value to the file when they differ. Run with `&`. See [Settings that survive a power cycle](#settings-that-survive-a-power-cycle). |
 
 Builtins (`help` lists them; they're not in `ls`, like `cd` isn't on
 `$PATH`): `jobs`, `kill %<id>`, `sleep <ms>`, `script <name>`,
@@ -303,6 +304,69 @@ df
 - **`/fram/boot` replaces the built-in boot script** when it exists, so
   what the board does at power-up is a file you edit, not firmware.
   `rm /fram/boot` brings the built-in one back.
+
+### Settings that survive a power cycle
+
+A setting is a device value saved in a file: one value per file, plain
+text, as the device speaks it. `remember <device> <file>`, run as a
+background job, writes the device's value to the file whenever they
+differ: every change is saved, whatever made it (a button through
+`toggle` or `adjust`, an `echo ... >`, a script). At power-up, the boot
+script restores the file into the device.
+
+Two lines per setting in `/fram/boot`, **in this order**:
+
+```
+cat /fram/lamp > /dev/lamp           # restore what was saved
+remember /dev/lamp /fram/lamp &      # from now on, keep saving changes
+```
+
+Restore **first**: started the other way round, `remember` would save the
+device's power-up default over the stored value before it's restored.
+The very first time, when `/fram/lamp` doesn't exist yet, the restore
+line just prints `cat: error` and `remember` creates the file. (Why so
+generic: picoos has no separate error output, no stderr. A message
+from `cat` itself would go where its output goes, here through
+`> /dev/lamp` into the device, so errors are reported by the shell as
+`<program>: error` on the terminal instead.)
+
+A whole boot script that remembers the lamp across power cycles:
+
+```
+script boot
+> date
+> cat /fram/lamp > /dev/lamp
+> remember /dev/lamp /fram/lamp &
+> toggle /dev/buttons/lamp /dev/lamp &
+> .
+```
+
+Press LAMP, switch the board off and on: the lamp comes back as it was.
+On babywarmer the same two lines will keep the setpoint, manual power,
+PID tunings, auto/manual mode, ...:
+
+```
+cat /fram/setpoint > /dev/setpoint
+remember /dev/setpoint /fram/setpoint &
+```
+
+- **Run once by hand** it saves (`saved /fram/lamp`) or says `unchanged`,
+  and stops.
+- **Stateless:** it compares with the file, not with a value it keeps, so
+  any number of `remember` jobs never get in each other's way.
+- **No wear, power-cut safe:** FRAM doesn't wear, so saving on every change
+  is fine, and the filesystem's write order means a power cut leaves the
+  old or the new value, never half of one.
+- **Settings are files, so `mkfs /fram` erases them**: a factory reset.
+  Unlike the hour counters, on purpose: settings may be reset,
+  operating hours may not.
+- **Not for devices whose read changes them.** `/dev/buttons` and
+  `/dev/buttons/<name>` are read-and-clear: `remember` would read them
+  every 150 ms and swallow the button presses. Values that change all the
+  time (`/dev/rtc`, `/dev/uptime`) work, but rewrite the file every
+  second: pointless.
+- Each `remember` takes one of the 20 job slots and reads a few bytes from
+  the FRAM every 150 ms.
 
 ### Scripts
 
@@ -753,7 +817,7 @@ of a filesystem. `dev/fram.cpp` is the example: twelve lines that put
 `fs/framfs.h` at `/fram`.
 
 Capacities (2026-11-15): 64 devices (`FS_MAX_DEVICES`, 19 used), 48
-programs (`PROG_MAX`, 21 used), 4 mounts (1 used), 4 files open at once,
+programs (`PROG_MAX`, 22 used), 4 mounts (1 used), 4 files open at once,
 20 background jobs, 32 tasks (22 used: the shell, the hour counter, the
 20 job slots).
 Every table says so loudly on the console when it's full, rather than
@@ -817,6 +881,17 @@ session with `>>`, scripts and `/fram/boot`). On the board:
 | New: `#` comments (`date # hi` runs `date`) | ok: typed and inside `/fram/boot` |
 | Stack fix (pipe buffers static): no visible change expected, everything above should behave the same | ok: nothing changed |
 | Shell fix found on the PC: lines typed or pasted after `run`/`sleep`/`watch` ran immediately, mixed into the script (inherited from picoos). Now they wait until it's done. Paste e.g. `sleep 2000` + `echo after` in one go | ok: `after` came after the sleep |
+
+**2026-11-15, `remember`** (`picoos.uf2`): tested on the PC (a simulated
+lamp and button: first save creates the file, `unchanged` after that, a
+button press through `toggle` and an `echo` both saved within a tick,
+restore after a simulated reboot, bad arguments). On the board:
+
+| Test | Result |
+|---|---|
+| `remember /dev/lamp /fram/lamp` by hand: `saved /fram/lamp`, again: `unchanged` | ok: with the job killed (`kill %1`), lamp switched on with LAMP: `saved /fram/lamp`, file `on`; run again: `unchanged` |
+| The boot script from "Settings that survive a power cycle": press LAMP, power off/on, the lamp comes back as it was (both on and off) | **on**: ok, restored after two power cycles in a row. First boot without `/fram/lamp`: `cat: error` (harmless; the README said `not found`, corrected), then `remember` created it (`off`). **off**: ok, switched off with LAMP, power off/on: still off |
+| `jobs` shows the `remember` job; `cat /fram/lamp` follows the lamp | ok: job `[1]`; `cat /fram/lamp` = `on` after LAMP was pressed |
 
 **2026-11-15, hour counter and the new FRAM layout** (`picoos.uf2`):
 tested on the PC (`fs/hours` against a simulated FRAM: counting,

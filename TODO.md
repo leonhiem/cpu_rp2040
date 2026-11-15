@@ -27,8 +27,9 @@ can live in files instead of in the firmware.
 - No directories yet, so naming carries the grouping: `pid.kp`,
   `pid.ti`, ... (11 characters max).
 
-**Plan (2026-11-15): a program `remember <device> <file>`** (name: Leon's
-choice), run as a background job. Not built yet.
+**`remember <device> <file>`** (name: Leon's choice), run as a background
+job. **Built 2026-11-15**, see the README's "Settings that survive a
+power cycle". The plan as it was:
 
 - **What it does:** every tick (150 ms) it reads the device and the file;
   if they differ, it writes the device's value to the file. Otherwise
