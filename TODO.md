@@ -386,6 +386,12 @@ controller, 7.5× the pixels, plus a touchscreen. Doable; notes:
   9's `rc` don't, and picoos doesn't either, for now (decided: leave the
   code as is). Decide together with the TFT console (wishlist 5), where
   the screen handling gets written anyway.
+  **Update 2026-11-16:** in practice a `tick` every minute *was* really
+  annoying (it split typed commands on screen several times). Worked
+  around by taking `tick` out of the crontab (cron output now only goes
+  to devices/files). So the redraw is wanted, not just nice to have, as
+  soon as anything prints to `/dev/cons` regularly; it's a small change
+  (`/dev/cons` asks the shell to redraw prompt + typed line).
 - **Per-job poll rate**: all background jobs run every 150 ms.
 - **`hyst` shares one state** between all its users (from picoos).
 - **`fsck /fram`**: reclaim blocks leaked by a power cut mid-write
