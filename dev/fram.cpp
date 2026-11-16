@@ -21,10 +21,19 @@
 #include "drivers/fm24cl64.h"
 #include "board.h"
 #include <cstdio>
+#include <cstring>
 
 static int fram_format(void)
 {
     return framfs_mkfs() ? 0 : -1;
+}
+
+static int fram_fsck(char *report, int len)
+{
+    framfs_check r;
+    report[0] = '\0';
+    if (framfs_fsck(&r, report, len) < 0) return -1;
+    return strlen(report);
 }
 
 static const mount_t mount_fram = {
@@ -36,6 +45,7 @@ static const mount_t mount_fram = {
     fram_format,
     framfs_df,
     framfs_rename,
+    fram_fsck,
 };
 
 static int raw_pread(char *buf, int len, uint32_t offset)
@@ -55,7 +65,15 @@ static const device_t dev_fram = {"/dev/fram", 0, 0, raw_read, 0, raw_pread};
 void fram_register(void)
 {
     fs_register(&dev_fram);
-    if (!framfs_mount())
+    if (!framfs_mount()) {
         printf("fram: no filesystem, run: mkfs /fram\n");
+    } else {
+        // Every boot: a quick check from the RAM cache (no FRAM reads).
+        // Silent when all is well; frees blocks a power cut left behind.
+        framfs_check r;
+        framfs_fsck(&r, 0, 0);
+        if (r.freed)   printf("fram: freed %d lost block(s), left by a power cut during a write\n", r.freed);
+        if (r.damaged) printf("fram: %d damaged file(s), run: fsck /fram\n", r.damaged);
+    }
     fs_mount(&mount_fram);
 }

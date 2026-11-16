@@ -151,6 +151,13 @@ int fs_rename(const char *from, const char *to)
     return m->rename(a, b);
 }
 
+int fs_fsck(const char *path, char *report, int len)
+{
+    const char *name;
+    const mount_t *m = find_mount(path, &name);
+    return (m && !*name && m->fsck) ? m->fsck(report, len) : -1;
+}
+
 int fs_remove(const char *path)
 {
     const char *name;

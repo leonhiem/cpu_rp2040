@@ -178,6 +178,7 @@ the LAMP button to the lamp output, as on babywarmer
 | `ls` | `ls [-l] /fram` | List the files on a mount (`-l`: with sizes). |
 | `rm` | `rm <path...>` | Remove files. |
 | `cp` | `cp <from> <to>` | Copy a file, or a device's value into a file (at most 1 KB). `<to>` a mount (`/fram`): same name there. Refuses copying a file onto itself. |
+| `fsck` | `fsck /fram` | Check the filesystem; frees blocks a power cut left behind, reports damaged files. Also runs by itself at every boot. See [fsck](#fsck-checking-the-filesystem). |
 | `mv` | `mv <from> <to>` | Rename within `/fram`: only the name in the directory entry is rewritten (one write, no data copied). Replaces an existing `<to>`. Not for devices or between mounts (use `cp`, then `rm`). |
 | `df` | `df` | Total, used and free space on every mount. |
 | `mkfs` | `mkfs /fram` | Format: every file on it is gone. Never happens on its own. |
@@ -679,6 +680,40 @@ Reading it (numbers are little-endian: `23 00` is 0x23 = 35):
   writes only the superblock, directory and chain table, never the data
   area, and a file only overwrites the bytes it needs.
 
+### fsck: checking the filesystem
+
+A power cut in the middle of a write can't damage a file (old or new,
+never half), but it can leave **lost blocks**: blocks marked "in use"
+that no file points to (the new copy was half written, or `rm` was cut
+short). They don't hurt anything, they just take space. On a board that
+gets unplugged at random moments while `remember` and cron write to the
+FRAM, they'd slowly add up. `fsck` finds and frees them.
+
+```
+% fsck /fram
+/fram: 4 files, 5 blocks in use, 106 free, no lost blocks
+ok
+```
+
+- **At every boot, automatically.** Silent when all is well; it says
+  `fram: freed 3 lost block(s), left by a power cut during a write`, or
+  `fram: 1 damaged file(s), run: fsck /fram`. It checks the directory and
+  chain table already cached in RAM, so it costs no FRAM reads.
+- **What it checks:** every file has a valid name, a size of at most 1 KB,
+  and a chain of exactly the right number of blocks, ending in END, with
+  no block out of range, marked free, or used twice. No name appears
+  twice. Every block in use belongs to a file.
+- **What it fixes: only what's safe.** Lost blocks are freed, but only
+  when every file checked out fine. A damaged file is reported, never
+  "repaired": you decide (look with `cat`, then `rm`, then `fsck` again).
+  With a damaged file around, nothing is freed at all: a "lost" block
+  might be the rest of its chain.
+- **Two files sharing a block** can't tell which one is wrong, so both are
+  named: `damaged: b and c share block 14 (check both with cat, rm the
+  wrong one)`. And `rm` of one of them never frees a block the other one
+  still uses (2026-11-16: `rm` and overwrites skip any block another file
+  reaches), so removing the wrong one doesn't take the good one with it.
+
 ### Hour counter (`/dev/hours`)
 
 An operating-hours counter like a car's odometer: it only goes up, and
@@ -919,7 +954,7 @@ of a filesystem. `dev/fram.cpp` is the example: twelve lines that put
 `fs/framfs.h` at `/fram`.
 
 Capacities (2026-11-15): 64 devices (`FS_MAX_DEVICES`, 21 used), 48
-programs (`PROG_MAX`, 24 used), 4 mounts (1 used), 4 files open at once,
+programs (`PROG_MAX`, 25 used), 4 mounts (1 used), 4 files open at once,
 20 background jobs, 32 tasks (23 used: the shell, the hour counter,
 cron, the 20 job slots).
 Every table says so loudly on the console when it's full, rather than
@@ -984,6 +1019,21 @@ session with `>>`, scripts and `/fram/boot`). On the board:
 | New: `#` comments (`date # hi` runs `date`) | ok: typed and inside `/fram/boot` |
 | Stack fix (pipe buffers static): no visible change expected, everything above should behave the same | ok: nothing changed |
 | Shell fix found on the PC: lines typed or pasted after `run`/`sleep`/`watch` ran immediately, mixed into the script (inherited from picoos). Now they wait until it's done. Paste e.g. `sleep 2000` + `echo after` in one go | ok: `after` came after the sleep |
+
+**2026-11-16, `fsck`** (`picoos.uf2`): tested on the PC (lost blocks from a
+power cut during an overwrite and during `rm`, freed and written back;
+cross-linked files: both named, nothing freed, `rm` of one leaves the
+other intact; a block marked free, a size over 1 KB, a block out of
+range, an empty file with a block, a chain longer than its size, a name
+twice, lost blocks together with a damaged file: nothing freed; the
+boot message after a simulated power cut; the old filesystem and `mv`
+power-cut tests still 20/20 and 16/16). On the board:
+
+| Test | Result |
+|---|---|
+| `fsck /fram` on the board's filesystem: `ok`, no lost blocks | ok: `4 files, 6 blocks in use, 105 free, no lost blocks` (boot and crontab 2 blocks each, lamp and rtc 1 each), `ok`; the boot before it was silent |
+| A real lost-block case (power cut while writing) | tried: `cat > /fram/junk`, four 96-character lines, power pulled right after `.`: the file was complete (384 bytes, 6 blocks), `fsck` ok, no lost blocks. A write takes milliseconds, too fast to cut by hand; the power-cut cases themselves are covered on the PC |
+| `fsck`, `fsck /dev`: usage / refused | ok: `usage: fsck /fram`; `fsck: /dev: not a mount, or not formatted` |
 
 **2026-11-16, `cp` and `mv`** (`picoos.uf2`): tested on the PC (`cp` file
 → file, device → file, to a mount point, onto itself refused, missing

@@ -49,3 +49,15 @@ int  framfs_rename(const char *from, const char *to); // 0, or -1
 // index-th file (0..): name + size. Returns -1 past the last file.
 int  framfs_list(int index, char *name, int namelen, int *size);
 int  framfs_df(int *free_bytes, int *total_bytes);         // 0, or -1 if not mounted
+
+// Check the filesystem (directory + chain table, from the RAM cache: no
+// FRAM reads). Every file must have a valid name, size <= 1 KB, and a
+// chain of exactly the right length ending in END, with no block used
+// twice or out of range; names must be unique. Blocks marked in use that
+// no file reaches are "lost" (a power cut mid-write leaves those).
+// Fixes only what is safe: lost blocks are freed, and only when every
+// file checked out fine. Damaged files are reported, never changed.
+// Writes a report into out (may be 0). Returns the number of problems
+// left (damaged files), 0 if clean, -1 if not mounted.
+struct framfs_check { int files, used, free, lost, freed, damaged; };
+int  framfs_fsck(framfs_check *r, char *out, int outlen);

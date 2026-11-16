@@ -1,6 +1,7 @@
 #include "framfs.h"
 #include "board.h"
 #include "drivers/fm24cl64.h"
+#include <cstdio>
 #include <cstring>
 #include <stdint.h>
 
@@ -94,11 +95,29 @@ static bool set_chain(int b, uint16_t next)
 
 // Frees a whole chain. Bounded by NBLOCKS steps, so a corrupt chain
 // (a loop) can't hang the system.
+// Frees a whole chain. Bounded by NBLOCKS steps, so a corrupt chain
+// (a loop) can't hang the system. Never frees a block that a file in the
+// directory still reaches: in a healthy filesystem that never happens,
+// but if a chain got corrupted into another file's blocks (fsck reports
+// "also used by another file"), removing the damaged file must not take
+// the healthy one's blocks with it. Called after the directory entry is
+// gone or points elsewhere, so the freed file itself isn't counted.
 static void free_chain(uint16_t b)
 {
+    static bool keep[NBLOCKS];
+    memset(keep, 0, sizeof(keep));
+    for (int i = 0; i < NDIR; i++) {
+        if (!dir[i].name[0]) continue;
+        uint16_t c = dir[i].first;
+        for (int steps = 0; c != END && c >= DATA_START && c < NBLOCKS && steps < NBLOCKS; steps++) {
+            if (keep[c]) break;
+            keep[c] = true;
+            c = chain[c];
+        }
+    }
     for (int steps = 0; b != END && b >= DATA_START && b < NBLOCKS && steps < NBLOCKS; steps++) {
         uint16_t next = chain[b];
-        set_chain(b, FREE);
+        if (!keep[b]) set_chain(b, FREE);
         b = next;
     }
 }
@@ -216,6 +235,94 @@ int framfs_list(int index, char *name, int namelen, int *size)
         return 0;
     }
     return -1;
+}
+
+int framfs_fsck(framfs_check *r, char *out, int outlen)
+{
+    *r = framfs_check{};
+    if (!mounted) return -1;
+    int pos = 0;
+    auto say = [&](const char *fmt, const char *name, int a, int b) {
+        if (!out || pos >= outlen) return;
+        int n = snprintf(out + pos, outlen - pos, fmt, name, a, b);
+        if (n > 0 && n < outlen - pos) pos += n; else pos = outlen;
+    };
+
+    static uint8_t owner[NBLOCKS];             // 0: no file yet, else directory index + 1
+    static bool bad_file[NDIR];
+    memset(owner, 0, sizeof(owner));
+    memset(bad_file, 0, sizeof(bad_file));
+    for (int i = 0; i < NDIR; i++) {
+        if (!dir[i].name[0]) continue;
+        r->files++;
+        char name[FRAMFS_NAME_MAX + 1];
+        memcpy(name, dir[i].name, FRAMFS_NAME_MAX);
+        name[FRAMFS_NAME_MAX] = '\0';
+        bool bad = false;
+        if (!valid_name(name)) { say("%sdamaged: directory entry %d: bad name\n", "", i, 0); bad = true; }
+        for (int j = 0; j < i && !bad; j++)
+            if (dir[j].name[0] && strncmp(dir[j].name, dir[i].name, FRAMFS_NAME_MAX) == 0) {
+                say("damaged: %s: the name appears twice\n", name, 0, 0);
+                bad = true;
+            }
+        if (!bad && dir[i].size > FRAMFS_MAX_FILE) { say("damaged: %s: size %d over 1 KB\n", name, dir[i].size, 0); bad = true; }
+        if (!bad) {
+            int need = (dir[i].size + BLOCK - 1) / BLOCK;
+            uint16_t b = dir[i].first;
+            if (need == 0 && b != END) { say("damaged: %s: empty but has a first block %d\n", name, b, 0); bad = true; }
+            for (int k = 0; k < need && !bad; k++) {
+                if (b < DATA_START || b >= NBLOCKS) { say("damaged: %s: block %d is out of range\n", name, b, 0); bad = true; break; }
+                if (chain[b] == FREE)                { say("damaged: %s: block %d is marked free\n", name, b, 0); bad = true; break; }
+                if (owner[b]) {
+                    // Two files share a block: which one is wrong can't be
+                    // told from here, so name both and mark both.
+                    int o = owner[b] - 1;
+                    char other[FRAMFS_NAME_MAX + 1];
+                    memcpy(other, dir[o].name, FRAMFS_NAME_MAX);
+                    other[FRAMFS_NAME_MAX] = '\0';
+                    if (out && pos < outlen) {
+                        int n = snprintf(out + pos, outlen - pos,
+                                         "damaged: %s and %s share block %d (check both with cat, rm the wrong one)\n",
+                                         other, name, b);
+                        if (n > 0 && n < outlen - pos) pos += n; else pos = outlen;
+                    }
+                    bad_file[o] = true;
+                    bad = true;
+                    break;
+                }
+                owner[b] = i + 1;
+                r->used++;
+                if (k == need - 1 && chain[b] != END) { say("damaged: %s: chain longer than the size (%d bytes)\n", name, dir[i].size, 0); bad = true; }
+                b = chain[b];
+            }
+        }
+        if (bad) bad_file[i] = true;
+    }
+    for (int i = 0; i < NDIR; i++) if (bad_file[i]) r->damaged++;
+
+    for (int b = DATA_START; b < NBLOCKS; b++) {
+        if (chain[b] == FREE) r->free++;
+        else if (!owner[b]) r->lost++;
+    }
+    // Free lost blocks only when every file is fine: with a damaged file,
+    // a "lost" block may be the rest of its chain -- leave the decision.
+    if (r->lost && !r->damaged) {
+        for (int b = DATA_START; b < NBLOCKS; b++)
+            if (chain[b] != FREE && !owner[b] && set_chain(b, FREE)) r->freed++;
+        r->free += r->freed;
+    }
+
+    say("%s%d files, %d blocks in use, ", "", r->files, r->used);
+    say("%s%d free", "", r->free, 0);
+    if (r->lost) {
+        if (r->freed) say("%s, %d lost blocks freed\n", "", r->freed, 0);
+        else          say("%s, %d lost blocks NOT freed (fix the damaged files first)\n", "", r->lost, 0);
+    } else {
+        say("%s, no lost blocks\n", "", 0, 0);
+    }
+    if (r->damaged) say("%s%d damaged file(s), see above: rm what's damaged, then run fsck again\n", "", r->damaged, 0);
+    else             say("%sok\n", "", 0, 0);
+    return r->damaged;
 }
 
 int framfs_df(int *free_bytes, int *total_bytes)

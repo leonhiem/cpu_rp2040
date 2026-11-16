@@ -88,6 +88,7 @@ add_executable(picoos
     prog/remember.cpp
     prog/cpmv.cpp
     prog/rm.cpp
+    prog/fsck.cpp
     prog/mkfs.cpp
     prog/df.cpp
     prog/ls.cpp

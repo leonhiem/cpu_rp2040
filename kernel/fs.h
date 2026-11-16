@@ -69,6 +69,7 @@ typedef struct {
     int (*format)(void);
     int (*df)(int *free_bytes, int *total_bytes);
     int (*rename)(const char *from, const char *to);              // 0, or -1
+    int (*fsck)(char *report, int len);   // check + safe fixes: report bytes, or -1
 } mount_t;
 
 #define FS_MAX_MOUNTS 4
@@ -92,6 +93,9 @@ int fs_remove(const char *path);
 // Rename within one mount (both paths in the same mount, e.g. /fram):
 // 0, or -1 (not found, other mount, bad name). An existing `to` is replaced.
 int fs_rename(const char *from, const char *to);
+// Check a mount's filesystem (e.g. "/fram"), fixing only what's safe;
+// writes a text report. Bytes of report, or -1.
+int fs_fsck(const char *path, char *report, int len);
 int fs_format(const char *path);
 int fs_df(const char *path, int *free_bytes, int *total_bytes);
 int fs_list(const char *path, int index, char *name, int namelen, int *size);

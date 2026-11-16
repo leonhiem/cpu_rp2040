@@ -56,6 +56,7 @@ void hexdump_register(void);
 void remember_register(void);
 void cpmv_register(void);
 void rm_register(void);
+void fsck_register(void);
 void mkfs_register(void);
 void df_register(void);
 void ls_register(void);
@@ -114,6 +115,7 @@ int main()
     remember_register();
     cpmv_register();
     rm_register();
+    fsck_register();
     mkfs_register();
     df_register();
     ls_register();

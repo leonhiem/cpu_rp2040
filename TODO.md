@@ -361,8 +361,9 @@ controller, 7.5× the pixels, plus a touchscreen. Doable; notes:
   `kernel/klog.h`); anything shared between cores needs a look.
 - **Quotes in the shell**: `echo "a > b"`. Would let `echo` write any
   line into a file, crontabs included.
-- **Streaming or larger pipes**: whole 1 KB buffers limit file size,
-  `ls` output, hexdump.
+- **Streaming or larger pipes**: pipes pass whole buffers (4 KB since
+  hexdump, was 1 KB), which limits long output (a big `hexdump` pages
+  with `-s`). Files are at most 1 KB, separately.
 - **More arguments per stage**: `JOB_MAX_ARGS` is 6 (5 arguments), so
   `echo` takes at most 5 words. Each extra argument costs
   4 stages × 24 bytes × 20 job slots ≈ 2 KB RAM; a smarter layout (one
@@ -415,7 +416,7 @@ controller, 7.5× the pixels, plus a touchscreen. Doable; notes:
   (`/dev/cons` asks the shell to redraw prompt + typed line).
 - **Per-job poll rate**: all background jobs run every 150 ms.
 - **`hyst` shares one state** between all its users (from picoos).
-- **`fsck /fram`**: reclaim blocks leaked by a power cut mid-write
+- **`fsck /fram`** — **done 2026-11-16** (see the README): reclaim blocks leaked by a power cut mid-write
   (today only `mkfs` does, by wiping everything).
 - **Directories on `/fram`**: not yet, by choice.
 - **Next PCB**: bigger FRAM in the same SOIC-8 footprint (32 KB, no
