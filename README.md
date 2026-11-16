@@ -1023,7 +1023,7 @@ bad lines reported once, nothing on an untrusted clock / with
 | Test | Result |
 |---|---|
 | `echo hello > /dev/cons` | ok: `hello` |
-| The example crontab: `tick` every minute, the LED on/off on even/odd minutes | `tick`: ok, every minute 00:02–00:06, from a crontab written with `script crontab` (191 bytes, comments included). A tick that arrives while the prompt is shown lands after the `%`, and the next typed line appears without a prompt (nothing lost, just confusing). LED: pending |
+| The example crontab: `tick` every minute, the LED on/off on even/odd minutes | `tick`: ok, every minute 00:02–00:06, from a crontab written with `script crontab` (191 bytes, comments included). A tick that arrives while the prompt is shown lands after the `%`, and the next typed line appears without a prompt (nothing lost, just confusing). LED (GPIO1, soldered 2026-11-16): ok, on for one minute, off for the next, repeating, from the `*/2` and `1-59/2` lines |
 | `echo off > /dev/cron`: ticks stop; `on`: they come back | ok: off before 00:10:50, no ticks at 00:11 and 00:12 (not caught up later); on at ~00:12:10, next tick 00:13 |
 | A bad line is reported once | ok: `61 * * * * echo x` → `cron: /fram/crontab line 1: bad, ignored` once, at the next minute (00:15), not again. Noted: `script crontab` replaces the whole file (as designed), so the tick lines were gone |
 | Power off/on: cron runs again from the next minute, from the stored crontab | ok (with `echo now > /dev/reboot`): boot at 00:19:22, that minute skipped, first `tick` at 00:20 from `/fram/crontab`; `/dev/cron` `on` again |
