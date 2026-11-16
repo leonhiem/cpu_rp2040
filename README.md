@@ -198,6 +198,13 @@ typing is `cat > <path>` / `cat >> <path>`, see [Writing a file:
   the `|` first. Everything after `>`, `>>`, `|` or `&` belongs to the
   shell, never to `echo`. To write lines like that into a file, type
   them with `cat >` (see [Writing a file](#writing-a-file-cat-)).
+- **Internal commands (shell builtins) can't be piped or redirected.**
+  `help`, `jobs`, `kill`, `sleep`, `run`, `loop`, `scripts`, `watch` print
+  straight to the terminal, and the shell ignores whatever follows them on
+  the line: `help | grep hours` prints all of `help`, unfiltered (found
+  2026-11-16). Programs and files are fine: `ls /fram | grep lam`,
+  `cat /fram/boot | grep butt`, `hexdump -n 256 /dev/fram | grep cron`.
+  `help` lists them under "internal commands".
 - One foreground command at a time. `sleep`, `run`, `loop` and `watch`
   hold the shell until they're done; anything typed or pasted meanwhile
   waits its turn.

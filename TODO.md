@@ -389,6 +389,15 @@ controller, 7.5× the pixels, plus a touchscreen. Doable; notes:
     time: on `/fram` it only rewrites the name in the 16-byte directory
     entry (one write, so power-cut safe), no data copied. That's a new
     `rename` operation for mounts (`kernel/fs.h`), like `remove`.
+- **Internal commands can't be piped** (2026-11-16, noted, not to fix
+  now): `help | grep hours` prints all of `help`, because builtins print
+  straight to the terminal and the shell ignores the rest of the line.
+  Same for `jobs | grep ...`. Marked as "internal commands" in `help`.
+  Possible fixes later: make the read-only ones (`help`, `jobs`, `scripts`)
+  programs that output text, like `ls` became one in picoos; and/or warn
+  (`help: builtins can't be piped`) instead of silently ignoring `|`/`>`
+  after a builtin. `sleep`, `run`, `loop`, `watch`, `kill` change the
+  shell itself, so they stay builtins.
 - **Prompt redraw after `/dev/cons` output?** (2026-11-16) Text written to
   `/dev/cons` (a cron `tick`) lands right after the `% ` prompt, and the
   next typed line appears without a prompt: nothing is lost, it only looks
