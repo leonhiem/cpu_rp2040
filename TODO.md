@@ -378,6 +378,17 @@ controller, 7.5× the pixels, plus a touchscreen. Doable; notes:
   - Still open, bigger, the classic Unix answer: `ed`, the line editor
     (`ed /fram/crontab`, then `3d`, `2a`, `p`, `w`). Fits with the TFT
     console and a keyboard.
+- **`cp <from> <to>`** (2026-11-16, Leon), next to `rm`. Today a copy works
+  as `cat /fram/a > /fram/b`, but `cp` says what it means. Notes:
+  - Small: a program that reads `<from>` (file or device) and writes
+    `<to>`, as `cat x > y` does, so it inherits the filesystem's
+    power-cut safety (old or new, never half).
+  - Unix habits worth keeping: `cp a /fram` (a mount as target) means
+    "same name, there"; refuse copying a file onto itself.
+  - Its sibling **`mv <from> <to>`** (rename) is worth doing at the same
+    time: on `/fram` it only rewrites the name in the 16-byte directory
+    entry (one write, so power-cut safe), no data copied. That's a new
+    `rename` operation for mounts (`kernel/fs.h`), like `remove`.
 - **Prompt redraw after `/dev/cons` output?** (2026-11-16) Text written to
   `/dev/cons` (a cron `tick`) lands right after the `% ` prompt, and the
   next typed line appears without a prompt: nothing is lost, it only looks
