@@ -177,6 +177,8 @@ the LAMP button to the lamp output, as on babywarmer
 | `select` | `select <state> <label>=<source> ...` | Output the source whose label matches the state device's value. |
 | `ls` | `ls [-l] /fram` | List the files on a mount (`-l`: with sizes). |
 | `rm` | `rm <path...>` | Remove files. |
+| `cp` | `cp <from> <to>` | Copy a file, or a device's value into a file (at most 1 KB). `<to>` a mount (`/fram`): same name there. Refuses copying a file onto itself. |
+| `mv` | `mv <from> <to>` | Rename within `/fram`: only the name in the directory entry is rewritten (one write, no data copied). Replaces an existing `<to>`. Not for devices or between mounts (use `cp`, then `rm`). |
 | `df` | `df` | Total, used and free space on every mount. |
 | `mkfs` | `mkfs /fram` | Format: every file on it is gone. Never happens on its own. |
 | `hexdump` | `hexdump [-s off] [-n len] [path]` | Hex + ASCII, `hexdump -C` layout, of a path or piped input. Repeated lines become `*`. See [hexdump](#hexdump). |
@@ -264,6 +266,9 @@ date >> /fram/log                    # a log, one line per entry
 label temp /dev/cputemp >> /fram/log
 cat /fram/log | tail 4               # the last two entries
 cat /fram/log | wc -l
+cp /fram/boot /fram/boot.old         # a copy before changing boot
+mv /fram/boot.old /fram/boot         # ...and back (replaces boot)
+cp /dev/rtc /fram                    # a device's value into /fram/rtc
 rm /fram/a.txt
 df
 ```
@@ -914,7 +919,7 @@ of a filesystem. `dev/fram.cpp` is the example: twelve lines that put
 `fs/framfs.h` at `/fram`.
 
 Capacities (2026-11-15): 64 devices (`FS_MAX_DEVICES`, 21 used), 48
-programs (`PROG_MAX`, 22 used), 4 mounts (1 used), 4 files open at once,
+programs (`PROG_MAX`, 24 used), 4 mounts (1 used), 4 files open at once,
 20 background jobs, 32 tasks (23 used: the shell, the hour counter,
 cron, the 20 job slots).
 Every table says so loudly on the console when it's full, rather than
@@ -979,6 +984,21 @@ session with `>>`, scripts and `/fram/boot`). On the board:
 | New: `#` comments (`date # hi` runs `date`) | ok: typed and inside `/fram/boot` |
 | Stack fix (pipe buffers static): no visible change expected, everything above should behave the same | ok: nothing changed |
 | Shell fix found on the PC: lines typed or pasted after `run`/`sleep`/`watch` ran immediately, mixed into the script (inherited from picoos). Now they wait until it's done. Paste e.g. `sleep 2000` + `echo after` in one go | ok: `after` came after the sleep |
+
+**2026-11-16, `cp` and `mv`** (`picoos.uf2`): tested on the PC (`cp` file
+→ file, device → file, to a mount point, onto itself refused, missing
+source, too-long name; `mv` rename, replacing an existing file, refused
+for devices / other mounts / same name / too-long name; a power cut at
+every write of a rename, plain and replacing: 16/16 keep the source
+data under exactly one name). On the board:
+
+| Test | Result |
+|---|---|
+| `cp /fram/boot /fram/boot.old`, `ls -l /fram`, `cat /fram/boot.old` | ok: `boot.old` 101 bytes, same as `boot` |
+| `cp /dev/rtc /fram`: a file `/fram/rtc` with the time | ok: `/fram/rtc`, 20 bytes, `2026-11-16 22:33:35` |
+| `mv /fram/boot.old /fram/b2`, then `mv /fram/b2 /fram/boot` (replaces boot) | ok: renamed, then replaced `boot`; in `ls` the new `boot` sits where `b2` was (the old entry was removed, `b2`'s entry renamed, nothing copied), still 101 bytes |
+| `cp /fram/boot /fram`, `mv /dev/rtc /fram/x`: refused with a message | ok: `cp: /fram/boot and /fram/boot are the same file`; `mv: /dev/rtc -> /fram/x: failed (...)`; nothing changed |
+| `help`: "cp, mv, rm" under "often needed" | pending |
 
 **2026-11-16, `cat >` / `cat >>` replace `script`** (`picoos.uf2`): tested
 on the PC (replace and append, lines with `>`, `&`, `#` kept, end with

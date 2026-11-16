@@ -143,6 +143,14 @@ int fs_pread(int fd, char *buf, int len, uint32_t offset)
     return m;
 }
 
+int fs_rename(const char *from, const char *to)
+{
+    const char *a, *b;
+    const mount_t *m = find_mount(from, &a);
+    if (!m || !*a || find_mount(to, &b) != m || !*b || !m->rename) return -1;
+    return m->rename(a, b);
+}
+
 int fs_remove(const char *path)
 {
     const char *name;

@@ -54,6 +54,7 @@ void headtail_register(void);
 void tee_register(void);
 void hexdump_register(void);
 void remember_register(void);
+void cpmv_register(void);
 void rm_register(void);
 void mkfs_register(void);
 void df_register(void);
@@ -111,6 +112,7 @@ int main()
     tee_register();
     hexdump_register();
     remember_register();
+    cpmv_register();
     rm_register();
     mkfs_register();
     df_register();

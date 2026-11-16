@@ -378,7 +378,8 @@ controller, 7.5× the pixels, plus a touchscreen. Doable; notes:
   - Still open, bigger, the classic Unix answer: `ed`, the line editor
     (`ed /fram/crontab`, then `3d`, `2a`, `p`, `w`). Fits with the TFT
     console and a keyboard.
-- **`cp <from> <to>`** (2026-11-16, Leon), next to `rm`. Today a copy works
+- **`cp <from> <to>`** (2026-11-16, Leon), next to `rm`. **Done 2026-11-16**,
+  with `mv`, as described below (see the README's programs table). Today a copy works
   as `cat /fram/a > /fram/b`, but `cp` says what it means. Notes:
   - Small: a program that reads `<from>` (file or device) and writes
     `<to>`, as `cat x > y` does, so it inherits the filesystem's

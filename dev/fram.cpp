@@ -35,6 +35,7 @@ static const mount_t mount_fram = {
     framfs_list,
     fram_format,
     framfs_df,
+    framfs_rename,
 };
 
 static int raw_pread(char *buf, int len, uint32_t offset)

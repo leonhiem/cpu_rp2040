@@ -185,6 +185,25 @@ int framfs_remove(const char *name)
     return 0;
 }
 
+int framfs_rename(const char *from, const char *to)
+{
+    if (!mounted || !valid_name(to)) return -1;
+    int i = find(from);
+    if (i < 0) return -1;
+    if (strcmp(from, to) == 0) return 0;
+    // Replace an existing target first: a power cut between the two steps
+    // loses the old target, never the file being renamed.
+    if (find(to) >= 0 && framfs_remove(to) < 0) return -1;
+    dirent e = dir[i];
+    memset(e.name, 0, sizeof(e.name));
+    strcpy(e.name, to);
+    // Only the name changes: size and first block are written back as they
+    // were, in the same single 16-byte write as any directory update.
+    if (!fram_write(dir_addr(i), (const uint8_t *)&e, sizeof(e))) return -1;
+    dir[i] = e;
+    return 0;
+}
+
 int framfs_list(int index, char *name, int namelen, int *size)
 {
     if (!mounted) return -1;

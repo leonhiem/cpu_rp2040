@@ -68,6 +68,7 @@ typedef struct {
     int (*list)(int index, char *name, int namelen, int *size);  // -1 past the end
     int (*format)(void);
     int (*df)(int *free_bytes, int *total_bytes);
+    int (*rename)(const char *from, const char *to);              // 0, or -1
 } mount_t;
 
 #define FS_MAX_MOUNTS 4
@@ -88,6 +89,9 @@ int fs_open(const char *path, int mode = FS_RDWR);
 // Whole-mount operations, Unix syscall-style: path is a file
 // ("/fram/a.txt") for fs_remove, the mount point ("/fram") for the rest.
 int fs_remove(const char *path);
+// Rename within one mount (both paths in the same mount, e.g. /fram):
+// 0, or -1 (not found, other mount, bad name). An existing `to` is replaced.
+int fs_rename(const char *from, const char *to);
 int fs_format(const char *path);
 int fs_df(const char *path, int *free_bytes, int *total_bytes);
 int fs_list(const char *path, int index, char *name, int namelen, int *size);

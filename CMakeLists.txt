@@ -86,6 +86,7 @@ add_executable(picoos
     prog/tee.cpp
     prog/hexdump.cpp
     prog/remember.cpp
+    prog/cpmv.cpp
     prog/rm.cpp
     prog/mkfs.cpp
     prog/df.cpp

@@ -42,6 +42,9 @@ bool framfs_mkfs(void);                  // format: all files gone
 int  framfs_read(const char *name, char *buf, int len);   // bytes, or -1 if no such file
 int  framfs_write(const char *name, const char *buf, int len, bool append); // len, or -1
 int  framfs_remove(const char *name);    // 0, or -1
+// Rename: rewrites only the name in the directory entry (one write, no
+// data copied). An existing `to` is removed first, as Unix mv does.
+int  framfs_rename(const char *from, const char *to); // 0, or -1
 
 // index-th file (0..): name + size. Returns -1 past the last file.
 int  framfs_list(int index, char *name, int namelen, int *size);

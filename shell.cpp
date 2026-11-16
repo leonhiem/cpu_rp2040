@@ -207,7 +207,7 @@ static void print_help(void)
            "  echo now > /dev/reboot               plain reboot\n"
            "  echo YYYY-MM-DD HH:MM:SS > /dev/rtc  set the clock (date shows it)\n"
            "  mkfs /fram                           format: files gone, hours kept\n"
-           "  df, ls -l /fram, rm /fram/<f>        space, files, remove\n"
+           "  df, ls -l /fram, cp, mv, rm          space, files, copy, rename, remove\n"
            "  cat /dev/hours                       power-on hours (set: /dev/hours/ctl)\n"
            "  cat > /fram/crontab                  timed jobs (on/off: /dev/cron)\n"
            "  hexdump [-s off] [-n len] <path>     raw bytes, e.g. /dev/fram, /dev/mem\n");
