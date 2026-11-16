@@ -123,7 +123,7 @@
 #include <cstdlib>
 
 #define LINE_MAX    96
-#define MAX_TOKENS  20
+#define MAX_TOKENS  48   // words + operators in one line (16 args x up to 4 stages fit)
 
 #define SCRIPT_MAX       4
 #define SCRIPT_NAME_MAX  16
@@ -186,7 +186,7 @@ static void print_help(void)
     // then the commands people look up most: how to reprogram the board
     // first of all.
     printf("grammar:  stage [| stage ...] [< path] [> path | >> path] [&]   # comment\n"
-           "          stage := program [arg...]\n"
+           "          stage := program [arg...]      quotes: \"...\" or '...'\n"
            "\n"
            "write a file:  cat > <path>   (replace)    cat >> <path>   (add to end)\n"
            "               type lines, end with '.' or Ctrl-D\n"
@@ -218,48 +218,71 @@ static void print_prompt(void)
     printf(capturing ? "> " : "%% ");
 }
 
-// '#' starts a comment. |, <, >, >> and & are words of their own, with or without spaces around
-// them -- `ls|grep dev` means the same as `ls | grep dev`, as in any
-// Unix shell. picoos only split on whitespace, so `ls|grep` came out as
-// one unknown program name. Done by copying the line with spaces put
-// around those characters, then splitting on whitespace as before; the
-// tokens point into this static copy, valid until the next tokenize().
-// dispatch() never nests, and parse_pipeline() copies what it keeps.
-static int tokenize(char *line, char *tokens[MAX_TOKENS])
+// Splits a line into tokens (cpu_rp2040, rewritten 2026-11-16 for quotes):
+//
+//  - |, <, >, >> and & are operators, with or without spaces around them:
+//    `ls|grep dev` = `ls | grep dev`. (picoos split on spaces only.)
+//  - "..." and '...' quote: everything inside is plain text, spaces and
+//    | < > & # included, so `echo "a > b"` prints `a > b`. Both kinds mean
+//    the same (no variables to expand); one kind can contain the other.
+//    Quoted and unquoted parts next to each other are one word, as in sh:
+//    a"b c"d is the word `ab cd`. "" is an empty word. No backslash escapes.
+//  - # at the start of a word (outside quotes) starts a comment.
+//
+// tokens[] point into a static buffer, valid until the next tokenize();
+// op[i] says whether token i is an operator -- so a quoted "|" is text,
+// never a pipe. Returns the number of tokens, or -1 (and says why) for a
+// missing closing quote or too many tokens.
+static int tokenize(const char *line, char *tokens[MAX_TOKENS], bool op[MAX_TOKENS])
 {
-    static char spaced[LINE_MAX * 3];
-    int len = 0;
-    for (const char *c = line; *c && len < (int)sizeof(spaced) - 4; c++) {
-        // A word starting with '#' is a comment: the rest of the line is
-        // ignored, as in sh/rc. Mid-word '#' (e.g. "a#b") is just a char.
-        if (*c == '#' && (c == line || c[-1] == ' ' || c[-1] == '\t')) break;
-        if (c[0] == '>' && c[1] == '>') {   // `>>` is one word, not two `>`
-            spaced[len++] = ' ';
-            spaced[len++] = '>';
-            spaced[len++] = '>';
-            spaced[len++] = ' ';
-            c++;
-        } else if (strchr("|<>&", *c)) {
-            spaced[len++] = ' ';
-            spaced[len++] = *c;
-            spaced[len++] = ' ';
-        } else {
-            spaced[len++] = *c;
-        }
-    }
-    spaced[len] = '\0';
-
+    static char buf[LINE_MAX * 2];
+    char *out = buf;
+    char *end = buf + sizeof(buf) - 3;
     int n = 0;
-    char *tok = strtok(spaced, " \t");
-    while (tok && n < MAX_TOKENS) {
-        tokens[n++] = tok;
-        tok = strtok(0, " \t");
+    const char *p = line;
+
+    for (;;) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p || *p == '#') break;
+        if (n >= MAX_TOKENS || out >= end) { printf("line too long: too many words\n"); return -1; }
+
+        tokens[n] = out;
+        if (strchr("|<>&", *p)) {
+            *out++ = *p;
+            if (p[0] == '>' && p[1] == '>') *out++ = *++p;   // `>>` is one operator
+            p++;
+            op[n] = true;
+        } else {
+            while (*p && *p != ' ' && *p != '\t' && !strchr("|<>&", *p)) {
+                if (*p == '"' || *p == '\'') {
+                    char q = *p++;
+                    while (*p && *p != q && out < end) *out++ = *p++;
+                    if (*p != q) { printf("missing closing %c\n", q); return -1; }
+                    p++;
+                } else if (out < end) {
+                    *out++ = *p++;
+                } else {
+                    p++;
+                }
+            }
+            op[n] = false;
+        }
+        *out++ = '\0';
+        n++;
     }
     return n;
 }
 
-static bool parse_pipeline(char **tok, int ntok, pipeline_t *p, bool *background)
+static bool is_op(const char *t, bool op, const char *which)
 {
+    return op && strcmp(t, which) == 0;
+}
+
+// Fills a pipeline from tokens: words go into p->text once, stages and
+// redirects refer to them by offset (see jobs.h).
+static bool parse_pipeline(char **tok, bool *op, int ntok, pipeline_t *p, bool *background)
+{
+    p->text_len = 0;
     p->nstages = 1;
     p->stages[0].argc = 0;
     p->has_redirect_out = false;
@@ -269,30 +292,36 @@ static bool parse_pipeline(char **tok, int ntok, pipeline_t *p, bool *background
 
     pipeline_stage_t *stage = &p->stages[0];
 
+    // Copies a word into p->text, returns its offset, or -1 if full.
+    auto keep = [&](const char *w) -> int {
+        int len = strlen(w);
+        if (p->text_len + len + 1 > PIPE_TEXT_MAX) return -1;
+        int off = p->text_len;
+        memcpy(p->text + off, w, len + 1);
+        p->text_len += len + 1;
+        return off;
+    };
+
     for (int i = 0; i < ntok; i++) {
         const char *t = tok[i];
-        if (strcmp(t, "|") == 0) {
-            if (p->nstages >= JOB_MAX_STAGES) { printf("too many pipeline stages\n"); return false; }
+        if (is_op(t, op[i], "|")) {
+            if (p->nstages >= JOB_MAX_STAGES) { printf("too many pipeline stages (max %d)\n", JOB_MAX_STAGES); return false; }
             stage = &p->stages[p->nstages++];
             stage->argc = 0;
-        } else if (strcmp(t, ">") == 0 || strcmp(t, ">>") == 0) {
-            p->redirect_append = (t[1] == '>');
-            if (++i >= ntok) { printf("%s needs a path\n", t); return false; }
-            strncpy(p->redirect_out, tok[i], JOB_TOK_MAX - 1);
-            p->redirect_out[JOB_TOK_MAX - 1] = '\0';
-            p->has_redirect_out = true;
-        } else if (strcmp(t, "<") == 0) {
-            if (++i >= ntok) { printf("< needs a path\n"); return false; }
-            strncpy(p->redirect_in, tok[i], JOB_TOK_MAX - 1);
-            p->redirect_in[JOB_TOK_MAX - 1] = '\0';
-            p->has_redirect_in = true;
-        } else if (strcmp(t, "&") == 0) {
+        } else if (is_op(t, op[i], ">") || is_op(t, op[i], ">>") || is_op(t, op[i], "<")) {
+            bool in = (t[0] == '<');
+            if (++i >= ntok || op[i]) { printf("%s needs a path\n", t); return false; }
+            int off = keep(tok[i]);
+            if (off < 0) { printf("line too long\n"); return false; }
+            if (in) { p->redirect_in = off; p->has_redirect_in = true; }
+            else    { p->redirect_out = off; p->has_redirect_out = true; p->redirect_append = (t[1] == '>'); }
+        } else if (is_op(t, op[i], "&")) {
             *background = true;
         } else {
-            if (stage->argc >= JOB_MAX_ARGS) { printf("too many args in one stage\n"); return false; }
-            strncpy(stage->argv[stage->argc], t, JOB_TOK_MAX - 1);
-            stage->argv[stage->argc][JOB_TOK_MAX - 1] = '\0';
-            stage->argc++;
+            if (stage->argc >= JOB_MAX_ARGS) { printf("too many args in one stage (max %d)\n", JOB_MAX_ARGS - 1); return false; }
+            int off = keep(t);
+            if (off < 0) { printf("line too long\n"); return false; }
+            stage->argv[stage->argc++] = off;
         }
     }
     return true;
@@ -369,25 +398,27 @@ static void capture_line(const char *line)
 static void dispatch(char *line)
 {
     char *tok[MAX_TOKENS];
-    int ntok = tokenize(line, tok);
-    if (ntok == 0) return; // empty line
+    bool op[MAX_TOKENS];
+    int ntok = tokenize(line, tok, op);
+    if (ntok <= 0) return; // empty line, or a bad one (tokenize said why)
+    bool word0 = !op[0];   // builtins are words, never operators
 
-    if (strcmp(tok[0], "help") == 0) {
+    if (word0 && strcmp(tok[0], "help") == 0) {
         print_help();
         return;
     }
-    if (strcmp(tok[0], "jobs") == 0) {
+    if (word0 && strcmp(tok[0], "jobs") == 0) {
         job_list();
         return;
     }
-    if (strcmp(tok[0], "kill") == 0) {
+    if (word0 && strcmp(tok[0], "kill") == 0) {
         if (ntok < 2) { printf("usage: kill %%<jobid>\n"); return; }
         const char *arg = tok[1];
         if (*arg == '%') arg++;
         if (!job_kill(atoi(arg))) printf("kill: no such job\n");
         return;
     }
-    if (strcmp(tok[0], "sleep") == 0) {
+    if (word0 && strcmp(tok[0], "sleep") == 0) {
         if (ntok < 2) { printf("usage: sleep <ms>\n"); return; }
         int ms = atoi(tok[1]);
         if (ms < 0) ms = 0;
@@ -395,7 +426,7 @@ static void dispatch(char *line)
         sleeping = true;
         return; // no prompt yet -- task_shell() prints one once awake
     }
-    if (strcmp(tok[0], "scripts") == 0) {
+    if (word0 && strcmp(tok[0], "scripts") == 0) {
         // Built-in ones only: scripts on the FRAM are plain files, listed
         // by `ls /fram` along with everything else stored there.
         for (int i = 0; i < SCRIPT_MAX; i++)
@@ -403,14 +434,14 @@ static void dispatch(char *line)
         printf("files: ls /fram\n");
         return;
     }
-    if (strcmp(tok[0], "run") == 0) {
+    if (word0 && strcmp(tok[0], "run") == 0) {
         if (ntok < 2) { printf("usage: run <name>\n"); return; }
         if (running) { printf("run: already running a script\n"); return; }
         if (!load_script(tok[1])) { printf("run: no such script '%s'\n", tok[1]); return; }
         running = true;
         return; // task_shell() drives it from here, one line per tick -- see run_step()
     }
-    if (strcmp(tok[0], "loop") == 0) {
+    if (word0 && strcmp(tok[0], "loop") == 0) {
         if (ntok < 2) { printf("usage: loop <name>\n"); return; }
         if (running) { printf("loop: already running a script\n"); return; }
         if (!load_script(tok[1])) { printf("loop: no such script '%s'\n", tok[1]); return; }
@@ -420,12 +451,12 @@ static void dispatch(char *line)
         return; // task_shell() drives it from here -- see run_step() and the
                  // `if (running)` block's own looping/Ctrl-C handling
     }
-    if (strcmp(tok[0], "watch") == 0) {
+    if (word0 && strcmp(tok[0], "watch") == 0) {
         if (ntok < 3) { printf("usage: watch <ms> <stage> [| stage ...] [< path]\n"); return; }
         int ms = atoi(tok[1]);
         if (ms < 50) ms = 50; // sane floor -- also protects against a typo like "watch heater"
         bool background;
-        if (!parse_pipeline(tok + 2, ntok - 2, &watch_pipeline, &background)) return;
+        if (!parse_pipeline(tok + 2, op + 2, ntok - 2, &watch_pipeline, &background)) return;
         if (watch_pipeline.stages[0].argc == 0) return;
         if (background) printf("watch: '&' ignored -- watch already repeats on its own\n");
         watch_interval_ms = (uint32_t)ms;
@@ -435,14 +466,14 @@ static void dispatch(char *line)
         return; // no normal prompt -- watch prints its own lines until stopped
     }
     if (tok[0][0] == '\0') return;
-    if (strcmp(tok[0], "|") == 0 || strcmp(tok[0], ">") == 0 || strcmp(tok[0], ">>") == 0) {
+    if (op[0] && strcmp(tok[0], "&") != 0) {   // a line starting with |, <, >, >>
         printf("empty pipeline\n");
         return;
     }
 
-    static pipeline_t p;   // ~650 bytes: static for the same reason as jobs.cpp's buffers
+    static pipeline_t p;   // ~270 bytes: static for the same reason as jobs.cpp's buffers
     bool background;
-    if (!parse_pipeline(tok, ntok, &p, &background)) return;
+    if (!parse_pipeline(tok, op, ntok, &p, &background)) return;
     if (p.stages[0].argc == 0) return; // e.g. line was just "&"
 
     // `cat > path` / `cat >> path` typed at the prompt: typing mode (see
@@ -450,9 +481,9 @@ static void dispatch(char *line)
     // `cat x > y`, `echo x | cat > y`, `cat < x > y` are ordinary copies --
     // and never inside a running script (no one there to type).
     if (!running && !background && p.nstages == 1 && p.stages[0].argc == 1
-        && strcmp(p.stages[0].argv[0], "cat") == 0
+        && strcmp(pipeline_arg(&p, 0, 0), "cat") == 0
         && !p.has_redirect_in && p.has_redirect_out) {
-        snprintf(capture_path, sizeof(capture_path), "%s", p.redirect_out);
+        snprintf(capture_path, sizeof(capture_path), "%s", pipeline_word(&p, p.redirect_out));
         capture_append = p.redirect_append;
         capture_len = 0;
         capturing = true;
@@ -633,14 +664,15 @@ bool shell_run_cron_line(const char *text)
     char line[LINE_MAX];
     snprintf(line, sizeof(line), "%s", text);
     char *tok[MAX_TOKENS];
-    int ntok = tokenize(line, tok);
-    if (ntok == 0) return false;
+    bool op[MAX_TOKENS];
+    int ntok = tokenize(line, tok, op);
+    if (ntok <= 0) return false;
     for (const char *b : builtins)
-        if (strcmp(tok[0], b) == 0) return false;
+        if (!op[0] && strcmp(tok[0], b) == 0) return false;
 
     static pipeline_t p;
     bool background;
-    if (!parse_pipeline(tok, ntok, &p, &background) || p.stages[0].argc == 0) return false;
+    if (!parse_pipeline(tok, op, ntok, &p, &background) || p.stages[0].argc == 0) return false;
     if (background) return job_start(&p) > 0;
     pipeline_run_once(&p, false);
     return true;

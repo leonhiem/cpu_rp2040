@@ -18,8 +18,9 @@ void pipeline_run_once(pipeline_t *p, bool print_if_no_redirect)
     int cur_len = 0;
 
     if (p->has_redirect_in) {
-        int fd = fs_open(p->redirect_in);
-        if (fd < 0) { printf("%s: not found\n", p->redirect_in); return; }
+        const char *in_path = pipeline_word(p, p->redirect_in);
+        int fd = fs_open(in_path);
+        if (fd < 0) { printf("%s: not found\n", in_path); return; }
         int n = fs_read(fd, cur, STAGE_BUF);
         fs_close(fd);
         cur_len = n < 0 ? 0 : n;
@@ -29,28 +30,32 @@ void pipeline_run_once(pipeline_t *p, bool print_if_no_redirect)
         pipeline_stage_t *st = &p->stages[i];
         if (st->argc == 0) { printf("empty pipeline stage\n"); return; }
 
-        const program_t *prog = prog_find(st->argv[0]);
-        if (!prog) { printf("%s: not found (try 'ls')\n", st->argv[0]); return; }
+        const char *name = pipeline_arg(p, i, 0);
+        const program_t *prog = prog_find(name);
+        if (!prog) { printf("%s: not found (try 'ls')\n", name); return; }
 
         char *argv_rest[JOB_MAX_ARGS];
-        for (int a = 1; a < st->argc; a++) argv_rest[a - 1] = st->argv[a];
+        // Programs only read their arguments (none writes into them), so
+        // they can point straight into the pipeline's text.
+        for (int a = 1; a < st->argc; a++) argv_rest[a - 1] = (char *)pipeline_arg(p, i, a);
 
         int n = prog->run(cur, cur_len, st->argc - 1, argv_rest, other, STAGE_BUF);
-        if (n < 0) { printf("%s: error\n", st->argv[0]); return; }
+        if (n < 0) { printf("%s: error\n", name); return; }
 
         char *tmp = cur; cur = other; other = tmp;
         cur_len = n;
     }
 
     if (p->has_redirect_out) {
-        int fd = fs_open(p->redirect_out, p->redirect_append ? FS_APPEND : FS_CREATE);
-        if (fd < 0) { printf("%s: not found\n", p->redirect_out); return; }
+        const char *out_path = pipeline_word(p, p->redirect_out);
+        int fd = fs_open(out_path, p->redirect_append ? FS_APPEND : FS_CREATE);
+        if (fd < 0) { printf("%s: not found\n", out_path); return; }
         int n = fs_write(fd, cur, cur_len);
         fs_close(fd);
         // Say so in the foreground (e.g. a full file, a bad value for a
         // device); background jobs stay quiet, as they always have, so a
         // job retrying every JOB_POLL_MS can't flood the terminal.
-        if (n < 0 && print_if_no_redirect) printf("%s: write failed\n", p->redirect_out);
+        if (n < 0 && print_if_no_redirect) printf("%s: write failed\n", out_path);
     } else if (print_if_no_redirect) {
         for (int i = 0; i < cur_len; i++) putchar(cur[i]);
         // No output, no line: `rm`, a `grep` without matches, `cat` of an
@@ -115,11 +120,16 @@ void job_list(void)
         printf("[%d] ", i + 1);
         for (int s = 0; s < slots[i].p.nstages; s++) {
             if (s > 0) printf("| ");
-            for (int a = 0; a < slots[i].p.stages[s].argc; a++)
-                printf("%s ", slots[i].p.stages[s].argv[a]);
+            for (int a = 0; a < slots[i].p.stages[s].argc; a++) {
+                // Words with spaces or shell characters were quoted when
+                // typed: show them quoted, so the listing can be typed again.
+                const char *w = pipeline_arg(&slots[i].p, s, a);
+                bool q = !*w || strpbrk(w, " \t|<>&#'\"");
+                printf(q ? (strchr(w, '"') ? "'%s' " : "\"%s\" ") : "%s ", w);
+            }
         }
         if (slots[i].p.has_redirect_out)
-            printf("%s %s ", slots[i].p.redirect_append ? ">>" : ">", slots[i].p.redirect_out);
+            printf("%s %s ", slots[i].p.redirect_append ? ">>" : ">", pipeline_word(&slots[i].p, slots[i].p.redirect_out));
         printf("&\n");
     }
     if (!any) printf("no background jobs\n");

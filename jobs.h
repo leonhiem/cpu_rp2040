@@ -31,10 +31,21 @@
  */
 #pragma once
 
+#include <stdint.h>
+
 #define JOB_MAX_STAGES 4
-#define JOB_MAX_ARGS   6 // slot 0 is the program name itself; bumped from 4
-                         // for adjust's <gate> <target-on> <target-off> <step>
-#define JOB_TOK_MAX    24
+#define JOB_MAX_ARGS   16 // per stage, slot 0 is the program name itself.
+                          // 2026-11-16 (cpu_rp2040): 6 -> 16. Words are no
+                          // longer fixed 24-byte slots but positions in the
+                          // pipeline's text (below), so an extra argument
+                          // costs 1 byte, not 24.
+#define PIPE_TEXT_MAX  192 // all words of one pipeline, each nul-terminated,
+                           // back to back. A typed line is at most 95
+                           // characters; even "a|a|a|..." (a word per
+                           // character) fits.
+#define JOB_TOK_MAX    64 // longest path the shell keeps elsewhere (cat >
+                          // target, script name); was also the per-word slot
+                          // size (24) until 2026-11-16
 #define MAX_JOBS       20 // must match jobs.cpp's JOB_SLOTS X-macro list, entry-for-entry.
                           // Bumped from 12 -- the boot script alone is about to
                           // reach 11 jobs, and LED wiring (the next piece) will
@@ -56,20 +67,31 @@
                             // matching the count exactly.
 #define JOB_POLL_MS    150
 
+// A parsed pipeline keeps the line's words once, in text[], and refers
+// to them by position (offset into text[]). Until 2026-11-16 every word
+// had its own fixed 24-byte slot: a quoted word longer than 23 characters
+// would have been cut off, and 20 job slots x 4 stages x 6 slots cost
+// 13 KB. Now a word can be as long as the line, a stage can have 16
+// words, and a pipeline is ~270 bytes.
 typedef struct {
-    char argv[JOB_MAX_ARGS][JOB_TOK_MAX];
-    int  argc;
+    uint8_t argv[JOB_MAX_ARGS];    // offsets into the pipeline's text[]
+    uint8_t argc;
 } pipeline_stage_t;
 
 typedef struct {
-    int  nstages;
+    char    text[PIPE_TEXT_MAX];
+    uint8_t text_len;
+    uint8_t nstages;
     pipeline_stage_t stages[JOB_MAX_STAGES];
-    bool has_redirect_out;
-    bool redirect_append;          // `>>` instead of `>`
-    char redirect_out[JOB_TOK_MAX];
-    bool has_redirect_in;
-    char redirect_in[JOB_TOK_MAX];
+    bool    has_redirect_out;
+    bool    redirect_append;       // `>>` instead of `>`
+    uint8_t redirect_out;          // offset into text[]
+    bool    has_redirect_in;
+    uint8_t redirect_in;           // offset into text[]
 } pipeline_t;
+
+static inline const char *pipeline_word(const pipeline_t *p, uint8_t off) { return p->text + off; }
+static inline const char *pipeline_arg(const pipeline_t *p, int stage, int i) { return p->text + p->stages[stage].argv[i]; }
 
 void pipeline_run_once(pipeline_t *p, bool print_if_no_redirect);
 

@@ -197,10 +197,17 @@ typing is `cat > <path>` / `cat >> <path>`, see [Writing a file:
   works the same as `ls | grep dev`.
 - `#` at the start of a word starts a comment, to the end of the line
   (handy in script files). Inside a word it's an ordinary character: `a#b`.
-- **No quotes yet.** `echo "a | b"` doesn't print `a | b`: the shell sees
-  the `|` first. Everything after `>`, `>>`, `|` or `&` belongs to the
-  shell, never to `echo`. To write lines like that into a file, type
-  them with `cat >` (see [Writing a file](#writing-a-file-cat-)).
+- **Quotes: `"..."` and `'...'`** (since 2026-11-16). Inside quotes
+  everything is plain text, spaces and `|` `<` `>` `&` `#` included:
+  `echo "a > b"` prints `a > b`, and `echo "|"` prints `|` (a quoted `|`
+  is never a pipe). Both kinds mean the same (there are no variables to
+  expand); use one kind to quote the other: `echo "it's"`,
+  `echo 'say "hi"'`. Quoted and unquoted parts next to each other make
+  one word, as in sh: `a"b c"d` is `ab cd`; `""` is an empty word. No
+  backslash escapes. A missing closing quote is an error
+  (`missing closing "`), not a guess.
+- **Up to 15 arguments per program**, and a quoted word can be as long
+  as the line (95 characters).
 - **Internal commands (shell builtins) can't be piped or redirected.**
   `help`, `jobs`, `kill`, `sleep`, `run`, `loop`, `scripts`, `watch` print
   straight to the terminal, and the shell ignores whatever follows them on
@@ -456,8 +463,8 @@ typing onto the end of /fram/hello: end with '.' or Ctrl-D
 ```
 
 - **Lines are kept exactly as typed**, `|`, `>`, `>>`, `&` and `#`
-  included. That's the difference with `echo ... >> file`, which can't
-  write those (no quotes yet: the shell takes them for itself).
+  included, without having to quote anything. (With quotes, `echo` can
+  write such lines too: `echo "line with > in it" >> file`.)
 - **To change or delete a line**, write the file again with `cat >`.
   (A real line editor, `ed`, is in `TODO.md`.)
 - **Ends silently** when the file was written, as Unix `cat` does; if it
@@ -505,24 +512,20 @@ cat > /fram/boot
 and add to it later with `cat >> /fram/boot`. `rm /fram/boot` brings the
 built-in boot script back.
 
-**`cat >` vs `echo >>`.** Because there are no quotes yet, `echo` can only
-put *simple* lines into a file:
+**`cat >>` or `echo "..." >>`.** One line with `|`, `<`, `>`, `&` or `#`
+in it can be added with `echo`, **if it's quoted**:
 
 ```
-echo date >> /fram/boot                   # fine: appends the line "date"
+echo "toggle /dev/buttons/lamp /dev/lamp &" >> /fram/boot
+echo '*/2 * * * *  echo on > /dev/led' >> /fram/crontab
 ```
 
-but **never** a line with `|`, `<`, `>`, `>>`, `&` or `#` in it:
-
-```
-echo toggle /dev/buttons/lamp /dev/lamp & >> /fram/boot     # WRONG
-```
-
-doesn't write that line into the file. The shell takes `&` and `>>` for
-itself: this starts a background job that appends
+**Without quotes** it goes wrong: `echo toggle /dev/buttons/lamp
+/dev/lamp & >> /fram/boot` doesn't write that line. The shell takes `&`
+and `>>` for itself and starts a background job that appends
 `toggle /dev/buttons/lamp /dev/lamp` to `/fram/boot` every 150 ms (until
-`kill`, or until the file is full at 1 KB). Type such lines with
-`cat >>`; it stores what you type, untouched.
+`kill`, or until the file is full at 1 KB). For several lines, or when
+in doubt, `cat >>` stores what you type, untouched.
 
 **A logger.** `loop` keeps the shell busy until Ctrl-C (it's a
 foreground command), but everything else, background jobs included,
@@ -965,13 +968,12 @@ dropping an entry silently (a lesson picoos learned three times).
 - **Pipes pass whole buffers, 4 KB each** (`STAGE_BUF`, was 1 KB until
   hexdump), not streams. Long output (a big `hexdump`) has to be paged
   with `-s`. Files are at most 1 KB, separately (`fs/framfs.h`).
-- **At most 5 arguments per program** (`JOB_MAX_ARGS 6`, the program
-  name included, from picoos): `echo` with more words fails with
-  `too many args in one stage`. Build long lines from several `>>`
-  appends, or type the line into a file with `cat >`. Raising it costs
-  RAM in every job slot.
-- **No quotes, no variables, no `$(...)`** in the shell. `label` covers the
-  most common need ("some text: a device's value").
+- **At most 15 arguments per program** (`JOB_MAX_ARGS 16`, the program
+  name included; was 5 until 2026-11-16), and a line is at most 95
+  characters. More words fail with `too many args in one stage (max 15)`.
+- **Quotes, but no variables, no `$(...)`, no backslash escapes** in the
+  shell. `label` covers the most common need ("some text: a device's
+  value").
 - **One shared poll rate** for all background jobs (150 ms).
 - **`hyst` keeps one state for everyone**: two `hyst` jobs at once would
   share it (inherited from picoos, documented in `prog/hyst.cpp`).
@@ -1019,6 +1021,22 @@ session with `>>`, scripts and `/fram/boot`). On the board:
 | New: `#` comments (`date # hi` runs `date`) | ok: typed and inside `/fram/boot` |
 | Stack fix (pipe buffers static): no visible change expected, everything above should behave the same | ok: nothing changed |
 | Shell fix found on the PC: lines typed or pasted after `run`/`sleep`/`watch` ran immediately, mixed into the script (inherited from picoos). Now they wait until it's done. Paste e.g. `sleep 2000` + `echo after` in one go | ok: `after` came after the sleep |
+
+**2026-11-16, quotes, and the new pipeline storage** (`picoos.uf2`):
+tested on the PC (`"..."` and `'...'` with spaces, `| < > & #` inside,
+one kind inside the other, `a"b c"d`, `""`, a quoted `|` not being a
+pipe, quoted paths, a quoted program name, a missing closing quote,
+12 words OK and 16 refused, `jobs` showing quoted words quoted again;
+and every earlier shell test again on the new parser: session, `cat >`,
+`cp`/`mv`, cron minute by minute, `remember`, hexdump: all unchanged).
+On the board:
+
+| Test | Result |
+|---|---|
+| `echo "a > b \| c & d # e"`, `echo 'say "hi"'`, `echo "it's"` | ok: `a > b \| c & d # e`, `say "hi"`, `it's` |
+| `echo "*/2 * * * *  echo on > /dev/led" >> /fram/crontab` (then check `cat /fram/crontab`, put the crontab back as it was) | ok: appended exactly; then the whole crontab rebuilt with `rm` and two quoted `echo ... >>` lines |
+| `echo one two three four five six seven eight nine ten`; `echo "unterminated` → `missing closing "` | ok: all ten words; `missing closing "` |
+| Everything else still as before: `boot` runs, `ls \| grep`, `cat >`, cron LED, `remember` | `boot`: ok, all four lines (`date`, the `> /dev/lamp` restore, both `&` jobs). `ls /fram \| grep cron`: ok. `remember`: ok, LAMP pressed → `/fram/lamp` followed (`off` → `on`), and after a power cycle the lamp came back `on`. Cron LED (GPIO1): ok, still alternating every minute from the crontab rebuilt with quoted `echo` lines |
 
 **2026-11-16, `fsck`** (`picoos.uf2`): tested on the PC (lost blocks from a
 power cut during an overwrite and during `rm`, freed and written back;
@@ -1155,14 +1173,15 @@ press/release is printed (mute, up, down, manual, start, lamp).
 
 | | Used | Available | |
 |---|---|---|---|
-| Flash (W25Q16JV) | 87 KB (`picoos.bin`) | 2048 KB | 4 % |
-| RAM | ~45 KB | 264 KB | 17 % |
+| Flash (W25Q16JV) | 101 KB (`picoos.bin`, 2026-11-16) | 2048 KB | 5 % |
+| RAM | ~39 KB (2026-11-16; ~45 KB before the pipeline storage change) | 264 KB | 15 % |
 | Stack, worst path | ~1 KB | 2 KB reserved | ok |
 | FRAM | ~1 KB metadata | 8 KB | the real limit |
 | GPIO | 11 (I2C 2, LED, lamp, 6 buttons, + ADC temp internal) | 30 | |
 
-RAM breakdown: 13 KB is the 20 background-job slots (a whole parsed
-pipeline each), ~12 KB shell and pipe buffers (2 × 4 KB pipe buffers,
+RAM breakdown: 5.2 KB is the 20 background-job slots (a parsed pipeline
+each, ~270 bytes; 13 KB until 2026-11-16, when words stopped having
+fixed 24-byte slots), ~12 KB shell and pipe buffers (2 × 4 KB pipe buffers,
 1 KB script, 1 KB capture, parsed pipelines), 1.8 KB FRAM filesystem
 (directory + chain cache, 1 KB append buffer), ~1.3 KB hexdump/`fs_pread`
 buffers, ~7.7 KB code copied to RAM by the SDK, ~3 KB USB stack, plus
@@ -1173,7 +1192,7 @@ biggest win first):
 
 | What | Flash | RAM | How |
 |---|---|---|---|
-| Job slots (`MAX_JOBS` 20, `jobs.h`) | 0 | 13 KB | Fewer slots: ~650 bytes each. Keep the `JOB_SLOTS` list in `jobs.cpp` the same length. |
+| Job slots (`MAX_JOBS` 20, `jobs.h`) | 0 | 5.2 KB | Fewer slots: ~270 bytes each (was ~650 / 13 KB until 2026-11-16). Keep the `JOB_SLOTS` list in `jobs.cpp` the same length. |
 | Pipe buffers (`STAGE_BUF` 4 KB, `jobs.h`) | 0 | 6 KB | Back to 1024. Everything keeps working; `hexdump` then shows ~192 bytes per screen instead of ~800 (`-- more:` still pages on). |
 | `hexdump` (`prog/hexdump.cpp`) | 1.5 KB | 0.3 KB | Remove it from `CMakeLists.txt` and its `hexdump_register()` call in `picoos.cpp`. Nothing depends on it. |
 | `/dev/mem` (`dev/mem.cpp`) | 0.2 KB | 0 | Same: CMake line + `mem_register()`. |

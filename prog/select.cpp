@@ -19,7 +19,7 @@
  *
  *   select /dev/state boost=80 coast=0 pid=/dev/pidout safe=/dev/safepower > /dev/autopower &
  *
- * Fits in 5 args (the current JOB_MAX_ARGS), covering exactly the 4
+ * Fitted in picoos's 5 args (JOB_MAX_ARGS, 15 since 2026-11-16), covering exactly the 4
  * real active phases -- no bump needed.
  */
 #include "kernel/prog.h"

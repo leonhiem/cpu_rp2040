@@ -140,13 +140,13 @@ all of them.
 - Measure before cutting: most programs are a few hundred bytes of
   flash, which won't matter with 2 MB (see the README's resources
   section: 4 % used). The real RAM costs are elsewhere: the 20 job slots
-  (13 KB), the pipe/script buffers, the FRAM filesystem's caches. Making
+  (5.2 KB, was 13 KB), the pipe/script buffers, the FRAM filesystem's caches. Making
   those sizes configurable (`MAX_JOBS`, `STAGE_BUF`, ...) would save
   more than leaving out `grep`.
 - Whole features worth a switch: the FRAM filesystem, cron, the TFT,
   `bringup`-style tests.
 - Real numbers to design it around are in the README ("If space ever gets
-  tight"): job slots 13 KB RAM, pipe buffers 6 KB RAM, hexdump 1.5 KB
+  tight"): job slots 5.2 KB RAM (was 13 KB), pipe buffers 6 KB RAM, hexdump 1.5 KB
   flash, /dev/mem + /dev/fram + fs_pread under 1 KB flash together.
 
 ### 4. Hour counter (power-fail safe) — built 2026-11-15
@@ -359,16 +359,16 @@ controller, 7.5× the pixels, plus a touchscreen. Doable; notes:
 - **ST7735 TFT, on core 1**: the stack fix (2026-11-12) made core 1 safe
   to use. `klog`'s "no locks needed" assumption ends there (see
   `kernel/klog.h`); anything shared between cores needs a look.
-- **Quotes in the shell**: `echo "a > b"`. Would let `echo` write any
-  line into a file, crontabs included.
+- **Quotes in the shell** — **done 2026-11-16**: `"..."` and `'...'`, see
+  the README's shell rules. `echo` can write any line into a file now,
+  crontabs included.
 - **Streaming or larger pipes**: pipes pass whole buffers (4 KB since
   hexdump, was 1 KB), which limits long output (a big `hexdump` pages
   with `-s`). Files are at most 1 KB, separately.
-- **More arguments per stage**: `JOB_MAX_ARGS` is 6 (5 arguments), so
-  `echo` takes at most 5 words. Each extra argument costs
-  4 stages × 24 bytes × 20 job slots ≈ 2 KB RAM; a smarter layout (one
-  shared text buffer per pipeline instead of fixed 24-byte slots) would
-  allow more for less.
+- **More arguments per stage** — **done 2026-11-16**, with the quotes:
+  each pipeline keeps the line's text once and refers to words by
+  position, so `JOB_MAX_ARGS` went 6 → 16 (15 arguments) and the job
+  slots shrank from 13 KB to 5.2 KB RAM.
 - **`shred` / wiping `rm`**: `rm` frees blocks but leaves the bytes (see
   the README's "What `rm` does").
 - **Adding to or editing a file with `>`, `|`, `&` in it** (2026-11-16):
