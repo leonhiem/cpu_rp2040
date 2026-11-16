@@ -998,7 +998,7 @@ data under exactly one name). On the board:
 | `cp /dev/rtc /fram`: a file `/fram/rtc` with the time | ok: `/fram/rtc`, 20 bytes, `2026-11-16 22:33:35` |
 | `mv /fram/boot.old /fram/b2`, then `mv /fram/b2 /fram/boot` (replaces boot) | ok: renamed, then replaced `boot`; in `ls` the new `boot` sits where `b2` was (the old entry was removed, `b2`'s entry renamed, nothing copied), still 101 bytes |
 | `cp /fram/boot /fram`, `mv /dev/rtc /fram/x`: refused with a message | ok: `cp: /fram/boot and /fram/boot are the same file`; `mv: /dev/rtc -> /fram/x: failed (...)`; nothing changed |
-| `help`: "cp, mv, rm" under "often needed" | pending |
+| `help`: "cp, mv, rm" under "often needed" | ok, also the "internal commands" heading and its "pipes ok" line |
 
 **2026-11-16, `cat >` / `cat >>` replace `script`** (`picoos.uf2`): tested
 on the PC (replace and append, lines with `>`, `&`, `#` kept, end with
