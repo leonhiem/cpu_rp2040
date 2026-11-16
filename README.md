@@ -183,8 +183,10 @@ the LAMP button to the lamp output, as on babywarmer
 | `remember` | `remember <device> <file>` | Keep a file equal to a device: write the device's value to the file when they differ. Run with `&`. See [Settings that survive a power cycle](#settings-that-survive-a-power-cycle). |
 
 Builtins (`help` lists them; they're not in `ls`, like `cd` isn't on
-`$PATH`): `jobs`, `kill %<id>`, `sleep <ms>`, `script <name>`,
-`run <name>`, `loop <name>`, `scripts`, `watch <ms> <pipeline>`.
+`$PATH`): `jobs`, `kill %<id>`, `sleep <ms>`, `run <name>`,
+`loop <name>`, `scripts`, `watch <ms> <pipeline>`. Writing a file by
+typing is `cat > <path>` / `cat >> <path>`, see [Writing a file:
+`cat >`](#writing-a-file-cat-).
 
 ### Shell rules in one place
 
@@ -194,8 +196,8 @@ Builtins (`help` lists them; they're not in `ls`, like `cd` isn't on
   (handy in script files). Inside a word it's an ordinary character: `a#b`.
 - **No quotes yet.** `echo "a | b"` doesn't print `a | b`: the shell sees
   the `|` first. Everything after `>`, `>>`, `|` or `&` belongs to the
-  shell, never to `echo`. See [Scripts](#scripts) for what that means
-  when writing script files.
+  shell, never to `echo`. To write lines like that into a file, type
+  them with `cat >` (see [Writing a file](#writing-a-file-cat-)).
 - One foreground command at a time. `sleep`, `run`, `loop` and `watch`
   hold the shell until they're done; anything typed or pasted meanwhile
   waits its turn.
@@ -300,9 +302,8 @@ df
   [system area](#hour-counter-devhours) for the hour counters.)
 - **Never formatted automatically.** A blank FRAM at boot just says
   `fram: no filesystem, run: mkfs /fram`, so a glitch can't wipe files.
-- **Scripts are files.** `script <name>` saves to `/fram/<name>`;
+- **Scripts are files.** Typed with `cat > /fram/<name>`;
   `run`/`loop <name>` take `/fram/<name>` first, else a built-in one.
-  Files can be scripts without `script`: `echo date >> /fram/boot`.
 - **`/fram/boot` replaces the built-in boot script** when it exists, so
   what the board does at power-up is a file you edit, not firmware.
   `rm /fram/boot` brings the built-in one back.
@@ -335,7 +336,7 @@ from `cat` itself would go where its output goes, here through
 A whole boot script that remembers the lamp across power cycles:
 
 ```
-script boot
+cat > /fram/boot
 > date
 > cat /fram/lamp > /dev/lamp
 > remember /dev/lamp /fram/lamp &
@@ -374,10 +375,11 @@ remember /dev/setpoint /fram/setpoint &
 
 Run commands at set times, driven by the RTC. `/fram/crontab` holds one
 job per line: the classic five time fields, then a command, a pipeline
-as typed at the prompt. Write it with `script crontab`:
+as typed at the prompt. Type it with `cat > /fram/crontab` (and add a
+line later with `cat >> /fram/crontab`):
 
 ```
-script crontab
+cat > /fram/crontab
 > # min   hour  day  month  weekday   command
 > *       *     *    *      *         echo tick > /dev/cons
 > */2     *     *    *      *         echo on > /dev/led
@@ -421,6 +423,41 @@ off in odd ones, a log line at 08:00 on weekdays, the lamp off at 22:00.
   (`dev/cron.cpp`). Not a background job on purpose: a job is a program
   inside the pipeline machinery, and pipelines can't start pipelines.
 
+### Writing a file: `cat >`
+
+The oldest Unix way to write a small file without an editor: `cat` with
+nothing to read, redirected into the file. Type the lines; a line with
+just `.` (or Ctrl-D) ends it.
+
+```
+% cat > /fram/hello            # replace (or create) the file
+typing into /fram/hello: end with '.' or Ctrl-D
+> date
+> sleep 1000
+> echo one second later
+> .
+% cat >> /fram/hello           # add lines to the end
+typing onto the end of /fram/hello: end with '.' or Ctrl-D
+> echo and one more line
+> .
+```
+
+- **Lines are kept exactly as typed**, `|`, `>`, `>>`, `&` and `#`
+  included. That's the difference with `echo ... >> file`, which can't
+  write those (no quotes yet: the shell takes them for itself).
+- **To change or delete a line**, write the file again with `cat >`.
+  (A real line editor, `ed`, is in `TODO.md`.)
+- **Ends silently** when the file was written, as Unix `cat` does; if it
+  couldn't be written (no filesystem, over 1 KB, a name over 11
+  characters) it says so.
+- **Only at the prompt.** A `cat > file` line inside a script or a
+  crontab doesn't wait for typing (no one is there): it writes an empty
+  file, as on Unix. And `cat x > y`, `cat < x > y`, `echo x | cat > y`
+  are ordinary copies.
+- Until 2026-11-16 this was the `script <name>` builtin (from picoos). It
+  could only replace, never add, and most files written this way aren't
+  scripts; `cat >` and `cat >>` replaced it.
+
 ### Scripts
 
 A script is a file of shell lines, run one line per shell tick. `sleep`
@@ -428,12 +465,12 @@ inside a script really waits; `&` inside a script starts a background
 job, exactly as if typed.
 
 ```
-script hello            # record into /fram/hello, end with a lone '.'
+cat > /fram/hello
 > date
 > sleep 1000
 > echo one second later
 > .
-run hello               # once
+run hello               # once (looks for /fram/hello)
 loop hello              # forever, Ctrl-C to stop
 cat /fram/hello         # it's just a file
 rm /fram/hello
@@ -441,10 +478,10 @@ rm /fram/hello
 
 **Your own boot script.** At power-up picoos runs `/fram/boot` if it
 exists, otherwise the built-in one (`date` + the LAMP toggle). To make
-your own, record it with `script`:
+your own, type it with `cat >`:
 
 ```
-script boot
+cat > /fram/boot
 > date                                    # say hello
 > toggle /dev/buttons/lamp /dev/lamp &
 > toggle /dev/buttons/mute /dev/led &
@@ -452,14 +489,14 @@ script boot
 > .
 ```
 
-`rm /fram/boot` brings the built-in boot script back.
+and add to it later with `cat >> /fram/boot`. `rm /fram/boot` brings the
+built-in boot script back.
 
-**`script` vs `echo >>`.** Because there are no quotes yet, `echo` can
-only put *simple* lines into a script file:
+**`cat >` vs `echo >>`.** Because there are no quotes yet, `echo` can only
+put *simple* lines into a file:
 
 ```
 echo date >> /fram/boot                   # fine: appends the line "date"
-echo uptime >> /fram/boot                 # fine
 ```
 
 but **never** a line with `|`, `<`, `>`, `>>`, `&` or `#` in it:
@@ -471,15 +508,15 @@ echo toggle /dev/buttons/lamp /dev/lamp & >> /fram/boot     # WRONG
 doesn't write that line into the file. The shell takes `&` and `>>` for
 itself: this starts a background job that appends
 `toggle /dev/buttons/lamp /dev/lamp` to `/fram/boot` every 150 ms (until
-`kill`, or until the file is full at 1 KB). Use `script` for such lines;
-it stores what you type, untouched.
+`kill`, or until the file is full at 1 KB). Type such lines with
+`cat >>`; it stores what you type, untouched.
 
 **A logger.** `loop` keeps the shell busy until Ctrl-C (it's a
 foreground command), but everything else, background jobs included,
 keeps running:
 
 ```
-script logger
+cat > /fram/logger
 > date >> /fram/log
 > label temp /dev/cputemp >> /fram/log
 > sleep 60000
@@ -884,7 +921,8 @@ dropping an entry silently (a lesson picoos learned three times).
 - **At most 5 arguments per program** (`JOB_MAX_ARGS 6`, the program
   name included, from picoos): `echo` with more words fails with
   `too many args in one stage`. Build long lines from several `>>`
-  appends, or use `script`. Raising it costs RAM in every job slot.
+  appends, or type the line into a file with `cat >`. Raising it costs
+  RAM in every job slot.
 - **No quotes, no variables, no `$(...)`** in the shell. `label` covers the
   most common need ("some text: a device's value").
 - **One shared poll rate** for all background jobs (150 ms).
@@ -934,6 +972,19 @@ session with `>>`, scripts and `/fram/boot`). On the board:
 | New: `#` comments (`date # hi` runs `date`) | ok: typed and inside `/fram/boot` |
 | Stack fix (pipe buffers static): no visible change expected, everything above should behave the same | ok: nothing changed |
 | Shell fix found on the PC: lines typed or pasted after `run`/`sleep`/`watch` ran immediately, mixed into the script (inherited from picoos). Now they wait until it's done. Paste e.g. `sleep 2000` + `echo after` in one go | ok: `after` came after the sleep |
+
+**2026-11-16, `cat >` / `cat >>` replace `script`** (`picoos.uf2`): tested
+on the PC (replace and append, lines with `>`, `&`, `#` kept, end with
+`.` and with Ctrl-D incl. a half-typed last line, Ctrl-D on an empty
+`cat >>` leaves the file alone, `cat < x > y` and `echo x | cat > y`
+stay copies, `cat >` inside a running script doesn't wait for typing,
+`script` gone, a too-long name reported). On the board:
+
+| Test | Result |
+|---|---|
+| `cat > /fram/crontab` with the three example lines, `.`; `cat /fram/crontab` | ok (ended with Ctrl-D): the file replaced, `cat` shows the three lines; a cron `tick` arriving mid-typing only mixed the screen, the typed lines were intact |
+| `cat >> /fram/crontab`, one more line, end with Ctrl-D; it's added at the end | ok: `bla bla bla` added as line 4 (a tick split the typed command on screen, `crtick`/`ontab`, the shell still had it whole) |
+| `help` shows the "write a file" lines; `script` says `not found` | `help`: ok, the new layout as designed (the "write a file" lines, no `script`, `cat > /fram/crontab` under "often needed"). `script`: `scripts` lists only `boot (built-in)`; `script x` → `script: not found (try 'ls')` on the board too |
 
 **2026-11-15, cron and `/dev/cons`** (`picoos.uf2`): tested on the PC
 with a simulated clock (minute by minute: start-up minute skipped,

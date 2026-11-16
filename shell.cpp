@@ -7,9 +7,9 @@
  * through klog -- interactive echo needs to be immediate, not batched
  * behind a flush task.
  *
- * Grammar: stage [| stage ...] [< path] [> path] [&]
+ * Grammar: stage [| stage ...] [< path] [> path | >> path] [&]
  *   stage := progname [arg...]
- * `jobs`, `kill %<id>`, `sleep <ms>`, and `script`/`run`/`scripts` (see
+ * `jobs`, `kill %<id>`, `sleep <ms>`, and `run`/`loop`/`scripts` (see
  * below) are true shell builtins (they touch the shell's own state,
  * not a text-in/text-out stream); everything else -- including ls now
  * -- is a program (kernel/prog.h) run through the same pipeline
@@ -26,13 +26,20 @@
  * ends -- they just sit in the USB stack's own RX buffer until
  * getchar_timeout_us() starts being called again.
  *
- * `script <name>` / `run <name>` -- named, storable sequences of shell
- * lines, the small step toward real scripts. `script <name>` puts the
- * shell into capture mode: the prompt changes to `> ` and every line
- * typed gets appended to that script instead of being run, until a
- * line containing just `.` ends it (an old ed-style terminator --
- * chosen over inventing `>>`/heredoc grammar). `scripts` lists what's
- * stored.
+ * `cat > <path>` / `cat >> <path>` typed at the prompt -- the oldest
+ * Unix way to write a small file without an editor. `cat` with nothing
+ * piped in and nothing to read puts the shell into typing mode: the
+ * prompt changes to `> ` and every line typed is collected, untouched
+ * (`|`, `>`, `&`, `#` included, which `echo` can't write), until a line
+ * containing just `.` (ed-style) or Ctrl-D ends it. Then `>` replaces
+ * the file, `>>` adds to its end. To change or delete a line: write the
+ * file again with `cat >`. (cpu_rp2040, 2026-11-16: replaces picoos's
+ * `script <name>` builtin, which could only replace, and whose name said
+ * "script" for files that often aren't.) Only at the prompt: a `cat >`
+ * line inside a running script or a crontab is an ordinary pipeline
+ * (no one is there to type).
+ *
+ * `run <name>` / `loop <name>` -- replay a file of shell lines.
  *
  * `run <name>` replays the stored lines through the same dispatch()
  * every typed line goes through -- but one line per task_shell() tick,
@@ -46,14 +53,11 @@
  * has to actually wait on it), so a heater or lamp step "after" a
  * sleep line fired immediately instead of after the delay.
  *
- * Scripts are files now (cpu_rp2040): `script <name>` saves to
- * /fram/<name> on the FRAM, so it survives a power cycle -- the thing
- * picoos never had. `run`/`loop <name>` look for /fram/<name> first,
- * then the built-in table (`scripts[SCRIPT_MAX]`, RAM, compiled in);
- * a name with a '/' in it is used as a path as-is. Being plain files,
- * scripts can also be written or extended without `script` at all:
- * `echo date >> /fram/boot`. If the FRAM isn't formatted (`mkfs /fram`),
- * `script` falls back to the RAM table, as in picoos.
+ * Scripts are files (cpu_rp2040): written with `cat > /fram/<name>`,
+ * they survive a power cycle -- the thing picoos never had.
+ * `run`/`loop <name>` look for /fram/<name> first, then the built-in
+ * table (`scripts[SCRIPT_MAX]`, compiled in: `boot`); a name with a '/'
+ * in it is used as a path as-is. `scripts` lists the built-in ones.
  *
  * `watch <ms> <stage> [| stage ...] [< path]` -- repeats a pipeline in
  * the foreground every <ms>, printing every time, until Ctrl-C (ASCII
@@ -152,7 +156,8 @@ static bool sleeping = false;
 static absolute_time_t wake_time;
 
 static bool capturing = false;
-static char capture_name[SCRIPT_NAME_MAX];
+static char capture_path[JOB_TOK_MAX];   // `cat > path`: where typed lines go
+static bool capture_append;              // `>>` instead of `>`
 static char capture_buf[SCRIPT_TEXT_MAX];
 static int  capture_len = 0;
 
@@ -183,12 +188,14 @@ static void print_help(void)
     printf("grammar:  stage [| stage ...] [< path] [> path | >> path] [&]   # comment\n"
            "          stage := program [arg...]\n"
            "\n"
+           "write a file:  cat > <path>   (replace)    cat >> <path>   (add to end)\n"
+           "               type lines, end with '.' or Ctrl-D\n"
+           "\n"
            "builtins (everything else is a program or a file: ls, ls -l /fram):\n"
            "  help                 this text\n"
            "  jobs                 list background jobs\n"
            "  kill %%<id>           stop a background job\n"
            "  sleep <ms>           pause the shell, everything else keeps running\n"
-           "  script <name>        record lines into /fram/<name>, end with '.'\n"
            "  run <name>           replay a script (/fram/<name>, else built-in)\n"
            "  loop <name>          replay a script forever, Ctrl-C to stop\n"
            "  scripts              list built-in scripts (files: ls /fram)\n"
@@ -201,7 +208,7 @@ static void print_help(void)
            "  mkfs /fram                           format: files gone, hours kept\n"
            "  df, ls -l /fram, rm /fram/<f>        space, files, remove\n"
            "  cat /dev/hours                       power-on hours (set: /dev/hours/ctl)\n"
-           "  script crontab                       timed jobs (on/off: /dev/cron)\n"
+           "  cat > /fram/crontab                  timed jobs (on/off: /dev/cron)\n"
            "  hexdump [-s off] [-n len] <path>     raw bytes, e.g. /dev/fram, /dev/mem\n");
 }
 
@@ -329,54 +336,28 @@ static bool load_script(const char *name)
     return true;
 }
 
-// Saves a captured script as /fram/<name>. False if there's no
-// filesystem (or it's full), so the caller can fall back to RAM.
-static bool save_script_file(const char *name, const char *text, int len)
+// Ends typing mode (`.` or Ctrl-D): writes what was typed to the file,
+// replacing it (`cat >`) or adding to it (`cat >>`). Silent on success,
+// as Unix cat is.
+static void finish_capture(void)
 {
-    char path[JOB_TOK_MAX];
-    snprintf(path, sizeof(path), "/fram/%s", name);
-    int fd = fs_open(path, FS_CREATE);
-    if (fd < 0) return false;
-    int n = fs_write(fd, text, len);
-    fs_close(fd);
-    return n == len;
+    capturing = false;
+    int fd = fs_open(capture_path, capture_append ? FS_APPEND : FS_CREATE);
+    int n = fd >= 0 ? fs_write(fd, capture_buf, capture_len) : -1;
+    if (fd >= 0) fs_close(fd);
+    if (n != capture_len)
+        printf("%s: write failed (no filesystem? full? over 1 KB? name over 11 chars?)\n", capture_path);
 }
 
-// Appends one typed line to the script currently being captured, or
-// finalizes it on a lone ".". Not called while a script is running --
-// run replays through dispatch(), never through capture.
+// One typed line in typing mode: collected, or `.` ends it. Not called
+// while a script is running -- run replays through dispatch().
 static void capture_line(const char *line)
 {
-    if (strcmp(line, ".") == 0) {
-        capture_buf[capture_len] = '\0';
-        capturing = false;
-        if (save_script_file(capture_name, capture_buf, capture_len)) {
-            printf("saved /fram/%s (%d bytes)\n", capture_name, capture_len);
-            return;
-        }
-        printf("could not save /fram/%s (no filesystem? full? name over 11 chars?), keeping it in RAM only\n", capture_name);
-        int slot = find_script(capture_name);
-        if (slot < 0) {
-            for (int i = 0; i < SCRIPT_MAX; i++) {
-                if (!scripts[i].used) { slot = i; break; }
-            }
-        }
-        if (slot < 0) {
-            printf("script: table full (max %d), '%s' not saved\n", SCRIPT_MAX, capture_name);
-        } else {
-            strncpy(scripts[slot].name, capture_name, SCRIPT_NAME_MAX - 1);
-            scripts[slot].name[SCRIPT_NAME_MAX - 1] = '\0';
-            strncpy(scripts[slot].text, capture_buf, SCRIPT_TEXT_MAX - 1);
-            scripts[slot].text[SCRIPT_TEXT_MAX - 1] = '\0';
-            scripts[slot].used = true;
-            printf("script '%s' saved in RAM (%d bytes)\n", capture_name, capture_len);
-        }
-        return;
-    }
+    if (strcmp(line, ".") == 0) { finish_capture(); return; }
 
     int llen = strlen(line);
     if (capture_len + llen + 1 >= SCRIPT_TEXT_MAX) { // +1 for the '\n' this line adds
-        printf("script: buffer full, line dropped\n");
+        printf("cat: 1 KB is the most a file can hold, line dropped\n");
         return;
     }
     memcpy(capture_buf + capture_len, line, llen);
@@ -413,20 +394,11 @@ static void dispatch(char *line)
         sleeping = true;
         return; // no prompt yet -- task_shell() prints one once awake
     }
-    if (strcmp(tok[0], "script") == 0) {
-        if (ntok < 2) { printf("usage: script <name>\n"); return; }
-        strncpy(capture_name, tok[1], SCRIPT_NAME_MAX - 1);
-        capture_name[SCRIPT_NAME_MAX - 1] = '\0';
-        capture_len = 0;
-        capturing = true;
-        printf("capturing '%s' -- end with a line containing just '.'\n", capture_name);
-        return; // prompt becomes "> " until capture ends
-    }
     if (strcmp(tok[0], "scripts") == 0) {
-        // Built-in/RAM ones only: scripts on the FRAM are plain files,
-        // listed by `ls /fram` along with everything else stored there.
+        // Built-in ones only: scripts on the FRAM are plain files, listed
+        // by `ls /fram` along with everything else stored there.
         for (int i = 0; i < SCRIPT_MAX; i++)
-            if (scripts[i].used) printf("%s (built-in/RAM)\n", scripts[i].name);
+            if (scripts[i].used) printf("%s (built-in)\n", scripts[i].name);
         printf("files: ls /fram\n");
         return;
     }
@@ -471,6 +443,22 @@ static void dispatch(char *line)
     bool background;
     if (!parse_pipeline(tok, ntok, &p, &background)) return;
     if (p.stages[0].argc == 0) return; // e.g. line was just "&"
+
+    // `cat > path` / `cat >> path` typed at the prompt: typing mode (see
+    // the header comment). Only for a plain `cat` with nothing to read --
+    // `cat x > y`, `echo x | cat > y`, `cat < x > y` are ordinary copies --
+    // and never inside a running script (no one there to type).
+    if (!running && !background && p.nstages == 1 && p.stages[0].argc == 1
+        && strcmp(p.stages[0].argv[0], "cat") == 0
+        && !p.has_redirect_in && p.has_redirect_out) {
+        snprintf(capture_path, sizeof(capture_path), "%s", p.redirect_out);
+        capture_append = p.redirect_append;
+        capture_len = 0;
+        capturing = true;
+        printf("typing %s %s: end with '.' or Ctrl-D\n",
+               capture_append ? "onto the end of" : "into", capture_path);
+        return; // prompt becomes "> " until it ends
+    }
 
     if (background) {
         int id = job_start(&p);
@@ -604,6 +592,15 @@ void task_shell(void)
             // picoos kept reading, so a pasted line after `run x` or
             // `sleep 1000` ran right away, mixed into the script.
             else break;
+        } else if (c == 4 && capturing) { // Ctrl-D: end typing mode, as on Unix
+            if (line_len > 0) {               // a half-typed last line counts too
+                line[line_len] = '\0';
+                capture_line(line);
+                line_len = 0;
+            }
+            printf("\n");
+            finish_capture();
+            print_prompt();
         } else if (c == 8 || c == 127) { // backspace / DEL
             if (line_len > 0) {
                 line_len--;
@@ -630,7 +627,7 @@ void task_shell(void)
 // Returns false if the line was refused (empty, builtin, bad grammar).
 bool shell_run_cron_line(const char *text)
 {
-    static const char *builtins[] = { "help", "jobs", "kill", "sleep", "script",
+    static const char *builtins[] = { "help", "jobs", "kill", "sleep",
                                       "scripts", "run", "loop", "watch" };
     char line[LINE_MAX];
     snprintf(line, sizeof(line), "%s", text);

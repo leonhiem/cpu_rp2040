@@ -15,8 +15,9 @@
 // As in Unix cron: when both day and weekday are restricted (not `*`), a
 // line runs if either matches.
 //
-// Write it with `script crontab` (echo can't write lines with `>`, `|`,
-// `&` or `#` until the shell has quotes). It's read again every minute,
+// Type it with `cat > /fram/crontab`, add lines with `cat >> /fram/crontab`
+// (echo can't write lines with `>`, `|`, `&` or `#` until the shell has
+// quotes). It's read again every minute,
 // so an edit takes effect from the next minute, no restart.
 //
 //   cat /dev/cron              -> "on" or "off"

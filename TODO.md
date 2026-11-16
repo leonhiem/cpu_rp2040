@@ -78,7 +78,7 @@ A crontab on the FRAM, driven by the RTC: run commands at set times.
 
 - `/fram/crontab`, classic five fields plus a command:
   `min hour day month weekday command`, with `*`, numbers, lists
-  (`1,15`) and steps (`*/5`). Write it with `script crontab` (`echo`
+  (`1,15`) and steps (`*/5`). Write it with `cat > /fram/crontab` (`echo`
   can't write lines with `>`, `|`, `&` in them until the shell has quotes).
 - A kernel task, not a job: checks `/dev/rtc` once a second, and on
   each new minute reads the crontab and runs the matching lines through
@@ -371,11 +371,11 @@ controller, 7.5× the pixels, plus a touchscreen. Doable; notes:
 - **`shred` / wiping `rm`**: `rm` frees blocks but leaves the bytes (see
   the README's "What `rm` does").
 - **Adding to or editing a file with `>`, `|`, `&` in it** (2026-11-16):
-  `script <name>` replaces the whole file (like `>`), and `echo ... >>`
-  can't write those characters until the shell has quotes. So there's no
-  way to add one line to `/fram/crontab` or `/fram/boot`, or change one.
-  - Small: `script -a <name>`, append the captured lines (like `>>` for `>`).
-  - Bigger, the classic Unix answer: `ed`, the line editor
+  - Adding: **done 2026-11-16**, as `cat >> <path>` (and `cat > <path>` to
+    replace); the `script` builtin is gone. Not `script -a` after all:
+    `cat >`/`cat >>` is the Unix way, with `>`/`>>` meaning what they
+    always mean. To change or delete a line: write the file again.
+  - Still open, bigger, the classic Unix answer: `ed`, the line editor
     (`ed /fram/crontab`, then `3d`, `2a`, `p`, `w`). Fits with the TFT
     console and a keyboard.
 - **Prompt redraw after `/dev/cons` output?** (2026-11-16) Text written to
