@@ -127,7 +127,120 @@ the same bytes as ASCII:
   entries, and a file's chain, to see the filesystem the README
   describes.
 
-### 3. Choosing what to build in
+### 3. Choosing what to build in — one picoos for all boards (planned 2026-11-20)
+
+**Decided 2026-11-20:** one source tree instead of three diverging copies
+(`../picoos` babywarmer, `../picogateway` on a Pico W, this repo). Layers:
+`kernel/` + shell (same for all), generic `dev/` `prog/` `fs/`, `drivers/`
+(chips), `boards/<board>/` (pin maps), `apps/<app>/` (babywarmer: heater,
+PID, phases, alarms, TFT; gateway: LoRa, wifi, ThingSpeak, OLED), and
+`configs/<name>.cmake`, one per firmware, Plan 9 kernel-config style.
+Compile time, not detected at start-up (pins can't be probed safely; the
+Pico W's wifi needs other SDK libraries). Order: (1) restructure this
+repo, the `cpu_rp2040` firmware unchanged, `bringup` per board; (2) move
+into the existing `picoos` repo as its next major version, both
+histories kept (show the git steps first); (3) the babywarmer app,
+first on the old babywarmer board as `babywarmer_v1`, with FRAM + RTC
+added by wire on its ADS1115 bus (GPIO12/13: ADS1115 0x48, FRAM 0x50,
+RTC 0x51; GPIO14/15 aren't routed there); (4) the gateway app later.
+Old boards without FRAM: supported as reduced configs.
+
+**I2C buses and chips in the config** (2026-11-21): the config describes
+buses and the chips on them, so any chip can sit on any bus at any
+address without code changes; drivers take their bus + address from it
+instead of the global `BOARD_I2C`:
+
+```cmake
+set(PICOOS_I2C   "local  i2c1 14 15 400000"      # name controller SDA SCL speed
+                 "header i2c0 12 13 400000")
+set(PICOOS_CHIPS "fm24cl64 local  0x50"          # driver bus address [options]
+                 "pcf8563  local  0x51"
+                 "ads1115  header 0x48"
+                 "24c256   header 0x52 size=32768 page=64")
+```
+
+**EEPROM with the NTC lookup table** (2026-11-21): a 24C256 (32 KB) or
+24C512 (64 KB) holding a table from ADS1115 code to temperature, on a
+future **ADC module** (ADS1115 + EEPROM on one small PCB), so the
+calibration travels with the sensor electronics and no firmware change
+is ever needed for a new sensor or module (unlike `ntc_lut.h` in the
+old picoos, edited and rebuilt when the NTC was swapped, 2026-08-30).
+- Addresses: 0x50 is the FRAM and 0x51 the RTC (fixed), so strap the
+  EEPROM to **0x52** or higher (A2 A1 A0 = 010).
+- Single-ended ADS1115 codes are 0..32767: one 2-byte temperature per
+  code is exactly 64 KB (24C512, full table); the 24C256 holds every
+  second code, linearly interpolated (2 ADC steps = ~0.25 mV, far below
+  what the NTC resolves). The table carries its own header (magic,
+  step, units) so either chip works.
+- Written once (EEPROMs wear, ~1M writes, ~5 ms per page: 64 bytes on
+  the 24C256, 128 on the 24C512), read often. Generated on the PC,
+  loaded once over USB.
+- In picoos: a raw `/dev/eeprom` (hexdump-able, like `/dev/fram`; writing
+  guarded), and the temperature device (e.g. `/dev/skintemp`) reads the
+  ADC and looks the value up in it.
+- Flash would also fit (today ~101 KB + babywarmer/TFT ~100 KB + a 64 KB
+  table = ~13 % of 2 MB), but the EEPROM-on-the-module design is better;
+  a table in flash stays a possible fallback for boards without one.
+
+- **Reading** (2026-11-21): one I2C address covers the whole chip (2-byte
+  memory address, as with the FRAM). Pages only limit *writes*; a read can
+  start anywhere and be any length, so one ADC conversion = one 4-byte
+  read (the two neighbouring entries, for interpolation), ~0.2 ms at
+  400 kHz. Single-ended ADS1115 codes are already 15 bits; with the
+  24C256's every-second-code table, interpolation still uses all 15.
+
+**Building and writing the table: needs software + a calibration
+procedure** (2026-11-21). The measuring is manual: the NTC (in its real
+housing) next to a reference thermometer, in an ice bath, then warmer
+water, recording pairs of *(ADC code, reference temperature)*. Leon's
+first idea: a point every 0.5 °C from 0.0 to 50.0 °C, with the
+temperatures in between interpolated. Notes for when it's built:
+- **On the board itself, picoos style**, so no PC tool is needed to read
+  the ADC: e.g. `ntccal` shows the live, averaged ADC code (say 64
+  samples, and "stable" once it stops drifting); you type the reference
+  temperature and it appends the point to a file (`/fram/ntc.pts`, plain
+  text, one `code temp` pair per line, editable with `cat >`). Then
+  `mklut` builds the table from the points and writes it to the EEPROM
+  page by page (64 or 128 bytes, waiting out each ~5 ms write), and
+  reads it back to verify.
+- **Fewer points can be enough.** An NTC follows a known smooth curve
+  (Steinhart-Hart / Beta). If the divider's fixed resistor and reference
+  voltage are known, ~3-5 good points (ice bath 0 °C, room, ~37 °C,
+  ~50 °C) give a better curve than 101 hand readings (it averages out
+  reading errors). If they're not known (as in 2026-08), interpolate
+  smoothly and monotonically through all the measured points instead.
+  `mklut` could do both; worth comparing on real data.
+- **Decided 2026-11-21: a few points by hand + a calculated curve**
+  (Steinhart-Hart), not 101 hand readings.
+- **Decided 2026-11-21, the workflow: FRAM as the scratch book, the EEPROM
+  as the final record.** The full table (32-64 KB) can't be a FRAM file
+  (files are at most 1 KB), but the points can, and a device can turn
+  points into a table when they're copied into it:
+  ```
+  cat > /fram/ntc.pts          # a few points by hand, "code temp" per line
+  cp /fram/ntc.pts /dev/lut    # fit the curve, write table + points to the EEPROM, verify
+  cat /dev/lut                 # what the module carries: points + curve, as text
+  cp /dev/lut /fram/ntc.pts    # and back out, to adjust and write again
+  ```
+  Writing text to `/dev/lut` makes it act (Plan 9 style); reading gives
+  the stored points and coefficients from the EEPROM header, so a module
+  always carries its own calibration, readable and round-trippable.
+  (So rather than a separate `mklut` program, it's the device's write.)
+- Writing a whole table is 512 page writes x ~5 ms = ~3 s of busy
+  system: fine on the bench, not while a heater runs. Either "bench
+  only", or let the write continue in small steps across ticks.
+- Outside the measured range (below the first / above the last point):
+  clamp, or mark "out of range" in the table, rather than extrapolate.
+- The table header records the calibration: date, number of points,
+  range, method, step, so `hexdump /dev/eeprom` (or a small `lutinfo`)
+  shows what a module carries.
+
+**Name** (2026-11-21, open): "picoos" was a quick name for an experiment;
+worth reconsidering before the repos merge (no longer tied to the Pico;
+possibly confused with the existing pico]OS RTOS). Candidates discussed:
+Warren, Kit, Burrow, plan2040, Cradle/Swaddle, Glenda.
+
+#### Original notes
 
 picoos grows by many small commands; a project shouldn't have to carry
 all of them.
