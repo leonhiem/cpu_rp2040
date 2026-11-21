@@ -12,6 +12,44 @@ two header rows exposing all GPIOs, plus:
 
 Pin map: [`board.h`](board.h). Ideas and open items: [`TODO.md`](TODO.md).
 
+## The name: plan2040
+
+This OS started in August 2026 as **picoos**: *Pico* (the Raspberry Pi
+Pico) + *OS*, a quick name for a multitasking experiment on the
+babywarmer firmware. The experiment worked out better than expected:
+the cooperative scheduler stayed simple, and the Plan 9 ideas (every
+device a file, small programs, pipes, scripts as files) turned out to
+be simple and good. By November it had a filesystem, an hour counter,
+cron and a real shell, and three diverging copies (picoos on the old
+babywarmer board, picogateway on a Pico W, this repo) were to become
+one OS for all boards. That called for a real name, decided on
+2026-11-21 in a long discussion:
+
+- **It had to credit the Plan 9 team at Bell Labs**, whose ideas this OS
+  re-uses (and whose 9P protocol is on the wish list for networking).
+  So the word *plan* stays.
+- **Humble, not a successor.** *plan10* was rejected: it would suggest
+  improving on Plan 9, and this OS borrows their ideas, it doesn't
+  better them. *nextplan* and *nextplan9* came close (new ideas keep
+  coming, "the next plan"), but remind of NeXT. *planlet*, *plan8*,
+  *plan9jr* and others were considered.
+- **Not tied to one chip**, since the same ideas should also run on
+  Leon's CDP1802 CPU in VHDL, an RP2350 later, or an array of many small
+  CPUs working together.
+- Other directions tried: Space Odyssey (*plan2061*, *plan3001*, after
+  Clarke's sequels), the Bible (*Selah*, "pause", like a cooperative
+  task; *Mustard*, the mustard seed), the Plan 9 bunny (*Warren*, *Kit*).
+
+**plan2040** solves it as a family: *plan* for Plan 9, and the number is
+the CPU it runs on. 2040 is the RP2040 this OS was born on, and reads
+as a futuristic year too. The CDP1802 version will be **plan1802** (a
+historical year, as it happens), an RP2350 build would be **plan2350**:
+the plan family, Plan 9's ideas on small CPUs.
+
+The code lives on at
+[github.com/leonhiem/plan2040](https://github.com/leonhiem/plan2040),
+which carries this repo's full history.
+
 ## Hardware notes
 
 - **Chip revision: RP2040 B2.** Read from the boot ROM's version byte
