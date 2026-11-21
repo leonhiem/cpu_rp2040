@@ -235,10 +235,8 @@ temperatures in between interpolated. Notes for when it's built:
   range, method, step, so `hexdump /dev/eeprom` (or a small `lutinfo`)
   shows what a module carries.
 
-**Name** (2026-11-21, open): "picoos" was a quick name for an experiment;
-worth reconsidering before the repos merge (no longer tied to the Pico;
-possibly confused with the existing pico]OS RTOS). Candidates discussed:
-Warren, Kit, Burrow, plan2040, Cradle/Swaddle, Glenda.
+**Name: decided 2026-11-21: plan2040.** The repo is
+github.com/leonhiem/plan2040; development continues there.
 
 #### Original notes
 
@@ -458,6 +456,71 @@ controller, 7.5× the pixels, plus a touchscreen. Doable; notes:
   experimental repo first, on a breadboard (driver, colors, speed,
   touch and its calibration, the XPT2046 bus choice above), then a
   handoff into picoos. Display and breadboard ordered 2026-11-14.
+
+### 6. picoos ideas on the CDP1802 (2026-11-21, future, a separate project)
+
+Leon's CDP1802 CPU in VHDL should get the ideas of picoos: devices as
+files (open/read/write, no ioctl), a cooperative scheduler of small
+resumable tasks, a shell with pipes/redirects, small programs, scripts
+as files. A separate project and discussion; noted here for the one
+consequence for *this* code:
+- **No rewrite to C** (decided 2026-11-21). The 1802 needs the ideas
+  more than this exact code (its drivers and memory handling would be
+  new anyway), and its known C compiler (the LCC port, lcc1802) has no
+  C++.
+- **Guideline instead: keep `kernel/`, `shell.cpp` and `jobs.cpp` in a
+  plain C++ subset**: no heap, no exceptions, no STL, no templates, no
+  RTTI. Almost true today (two small lambdas, in the parser and in
+  `fsck`, would be quick to turn into functions). Then the core can be
+  carried to a C compiler later without a rewrite.
+- **Size:** the 1802's 64 KB is the whole machine (like a PDP-11
+  process). Today's picoos (~100 KB code, ~39 KB RAM incl. 8 KB pipe
+  buffers) won't fit as is; a core config with small buffers would
+  (another reason for idea 3's configurable sizes).
+- **Later topic: memory beyond 64 KB**, banked memory and locking (an
+  expansion register in the FPGA switching which RAM bank appears in
+  part of the address space), as many 8-bit machines grew.
+- Perspective: Unix grew up on PDP-11s (64 KB per process, < 1 MIPS)
+  and Plan 9 on early-1990s 386/486/MIPS machines; the RP2040 is faster
+  than most of them. "Small" is relative.
+
+### 7. An array of CPUs: one large computer from many small ones (2026-11-21, future)
+
+Leon's idea (and long dream): since every small CPU has a memory limit
+(the CDP1802's 64 KB; the RP2040 has no memory bus to expand), build an
+**array of CPUs**, each working with its own memory block, plus one
+extra CPU (N+1) as **supervisor** that allocates and delegates. A large
+computer made of many small ones, while staying with small micro CPUs.
+
+It's a known, respected architecture:
+- **INMOS transputers** (1980s): arrays of small CPUs with their own
+  memory, joined by fast serial links, a root node loading and directing
+  the others; their language Occam used channels between processes
+  (the same idea as pipes).
+- **Plan 9 was designed for exactly this**: CPU servers, file servers and
+  terminals, each with its own memory, joined into one namespace by
+  **9P**; the `cpu` command runs work on a CPU server that still sees
+  your files. So this idea and the wish for 9P (see the name entry under
+  idea 3) are really one idea.
+
+Two ways to build it:
+
+| | Shared memory | Message passing |
+|---|---|---|
+| How | One big memory; each CPU gets its own window/block; a bus arbiter decides who may access | Each CPU has its own memory; CPUs talk over links (UART, SPI, PIO, or in VHDL your own) |
+| Supervisor (N+1) | Allocates memory blocks (sets each CPU's window/bank registers) | Allocates *work*: run this pipeline stage, serve this device |
+| Hard part | Locking and arbitration: two CPUs must never use the same data at once (the topic Leon wants to learn, see idea 6) | Latency; designing the messages |
+| Fits | The CDP1802 in VHDL: the bus, arbiter and bank registers are self-designed | RP2040s: no external memory bus, but fast links (PIO: several Mbit/s) |
+
+How picoos carries over:
+- **Devices as files make distribution natural**: a node offers its
+  devices as files; the supervisor mounts them over the link (9P, or
+  something simpler first): `cat /node2/dev/skintemp` like a local file.
+- **Pipes across nodes**: `cat /node1/dev/adc | pid ... > /node2/dev/heater`,
+  each stage possibly on another node.
+- The supervisor holds the namespace and hands out work, Plan 9 style.
+- First step whenever it starts: two RP2040 boards and one link, one
+  remote device file read through it.
 
 ## Known open items
 
