@@ -1,5 +1,10 @@
 # cpu_rp2040
 
+> **Moved (2026-11-21):** this code continues as
+> **[plan2040](https://github.com/leonhiem/plan2040)**, which carries this
+> repo's full history. This repo is archived; please go there. (Why the
+> name: see "The name: plan2040" below.)
+
 A small, general-purpose RP2040 board, and the next version of
 [picoos](https://github.com/leonhiem/picoos) running on it.
 
